@@ -59,8 +59,7 @@ jobs:
       - name: Bump package versions
         run: |
           VERSION="${{ steps.version.outputs.new }}"
-          cd packages/types && npm version "$VERSION" --no-git-tag-version
-          cd ../sdk && npm version "$VERSION" --no-git-tag-version
+          node -e "const fs=require('fs'); for(const p of ['packages/types','packages/sdk']){const f=p+'/package.json';const j=JSON.parse(fs.readFileSync(f));j.version='$VERSION';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n');}"
 
       - name: Update compatibility board
         run: |

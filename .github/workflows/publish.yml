@@ -39,17 +39,21 @@ jobs:
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Set package versions
+      - name: Set package versions and update SDK dependency
         run: |
-          cd packages/types && npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
-          cd ../sdk && npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
-
-      - name: Update SDK dependency on types
-        run: |
-          cd packages/sdk
           VERSION="${{ steps.version.outputs.version }}"
-          cat package.json | jq --arg v "^$VERSION" '.dependencies["@pedi/chika-types"] = $v' > package.json.tmp
-          mv package.json.tmp package.json
+          node -e "
+            const fs = require('fs');
+            for (const p of ['packages/types', 'packages/sdk']) {
+              const f = p + '/package.json';
+              const j = JSON.parse(fs.readFileSync(f));
+              j.version = '$VERSION';
+              if (j.dependencies && j.dependencies['@pedi/chika-types']) {
+                j.dependencies['@pedi/chika-types'] = '^$VERSION';
+              }
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+            }
+          "
 
       - name: Publish @pedi/chika-types
         run: cd packages/types && npm publish --access public
