@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: 'Custom version (overrides bump type, e.g. 2.0.0-beta.1)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine new version
+        id: version
+        run: |
+          CURRENT=$(node -p "require('./packages/types/package.json').version")
+          if [ -n "${{ inputs.custom_version }}" ]; then
+            NEW="${{ inputs.custom_version }}"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            case "${{ inputs.bump }}" in
+              major) NEW="$((MAJOR + 1)).0.0" ;;
+              minor) NEW="$MAJOR.$((MINOR + 1)).0" ;;
+              patch) NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+            esac
+          fi
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT → $NEW"
+
+      - name: Bump package versions
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          cd packages/types && npm version "$VERSION" --no-git-tag-version
+          cd ../sdk && npm version "$VERSION" --no-git-tag-version
+
+      - name: Update compatibility board
+        run: |
+          SDK_VERSION="${{ steps.version.outputs.new }}"
+          SERVER_VERSION=$(node -p "require('./server/package.json').version")
+          DATE=$(date +%Y-%m-%d)
+          sed -i "s/^|--------|-------------|------|$/|--------|-------------|------|\n| $SERVER_VERSION | $SDK_VERSION | $DATE |/" COMPATIBILITY.md
+
+      - name: Commit and tag
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          git add packages/types/package.json packages/sdk/package.json COMPATIBILITY.md
+          git commit -m "release: v$VERSION"
+          git tag "v$VERSION"
+          git push origin HEAD --tags
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            --latest

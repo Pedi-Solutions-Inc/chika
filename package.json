@@ -1,0 +1,13 @@
+{
+  "name": "pedi-chika",
+  "private": true,
+  "workspaces": ["packages/*", "server"],
+  "scripts": {
+    "build": "bun run build:types && bun run build:sdk",
+    "build:types": "bun run --cwd packages/types build",
+    "build:sdk": "bun run --cwd packages/sdk build",
+    "typecheck": "bun run typecheck:types && bun run typecheck:sdk",
+    "typecheck:types": "bun run --cwd packages/types typecheck",
+    "typecheck:sdk": "bun run --cwd packages/sdk typecheck"
+  }
+}

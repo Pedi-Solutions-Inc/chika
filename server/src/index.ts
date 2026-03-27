@@ -1,0 +1,89 @@
+import { Hono } from 'hono';
+import { logger } from 'hono/logger';
+import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
+import { channels } from './routes/channels';
+import { internal } from './routes/internal';
+import { connectDb, disconnectDb, getDb } from './db';
+import { getAllChannelIds, disconnectChannel } from './broadcaster';
+import { rateLimiter } from 'hono-rate-limiter';
+import { startChannelCleanup, stopChannelCleanup } from './channel-cleanup';
+import { initSentry, captureException } from './sentry';
+import { initAuth, requireAuth } from './middleware/auth';
+import { env } from './env';
+
+const app = new Hono();
+
+app.use('*', logger());
+app.use('*', cors());
+app.use('*', bodyLimit({ maxSize: 64 * 1024 }));
+
+app.onError((err, c) => {
+  console.error('Unhandled error:', err.message);
+  captureException(err);
+  return c.json({ error: 'Internal server error' }, 500);
+});
+
+app.get('/health', async (c) => {
+  try {
+    await getDb().command({ ping: 1 });
+    return c.json({ status: 'ok' });
+  } catch {
+    return c.json({ status: 'unhealthy' }, 503);
+  }
+});
+
+const channelRateLimit = rateLimiter({
+  windowMs: 60_000,
+  limit: 120,
+  keyGenerator: (c) =>
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? c.req.header('x-real-ip')
+    ?? 'unknown',
+});
+
+const streamRateLimit = rateLimiter({
+  windowMs: 60_000,
+  limit: 30,
+  keyGenerator: (c) =>
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? c.req.header('x-real-ip')
+    ?? 'unknown',
+});
+
+app.use('/channels/:channelId/messages', channelRateLimit);
+app.use('/channels/:channelId/stream', streamRateLimit);
+app.use('/channels/:channelId/join', channelRateLimit);
+
+// Auth middleware — active only when auth.config.ts exists.
+app.use('/channels/:channelId/*', requireAuth);
+
+app.route('/channels', channels);
+app.route('/internal/channels', internal);
+
+initSentry();
+await connectDb();
+await initAuth();
+startChannelCleanup();
+
+console.log(`chika-server listening on :${env.PORT}`);
+
+async function shutdown() {
+  console.log('Shutting down...');
+  stopChannelCleanup();
+
+  const channelIds = [...getAllChannelIds()];
+  await Promise.allSettled(channelIds.map((id) => disconnectChannel(id)));
+
+  await disconnectDb();
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+export default {
+  port: env.PORT,
+  fetch: app.fetch,
+  idleTimeout: 0,
+};
