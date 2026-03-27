@@ -103,7 +103,7 @@ export const requireAuth = createMiddleware(async (c, next) => {
   // Cache key
   const validTtl = cfg.cacheTtl ?? 300_000;
   const invalidTtl = cfg.invalidCacheTtl ?? 2_000;
-  const cacheKeyFn = cfg.cacheKey ?? ((c) => c.headers['authorization'] ?? null);
+  const cacheKeyFn = cfg.cacheKey ?? ((c: AuthValidatorContext) => c.headers['authorization'] ?? null);
   const cacheKey = cacheKeyFn(ctx);
 
   if (cacheKey) {
