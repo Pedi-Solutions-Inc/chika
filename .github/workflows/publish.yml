@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
@@ -47,17 +47,12 @@ jobs:
       - name: Update SDK dependency on types
         run: |
           cd packages/sdk
-          # Replace workspace protocol with the actual version being published
           VERSION="${{ steps.version.outputs.version }}"
           cat package.json | jq --arg v "^$VERSION" '.dependencies["@pedi/chika-types"] = $v' > package.json.tmp
           mv package.json.tmp package.json
 
       - name: Publish @pedi/chika-types
-        run: cd packages/types && npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: cd packages/types && npm publish --access public
 
       - name: Publish @pedi/chika-sdk
-        run: cd packages/sdk && npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: cd packages/sdk && npm publish --access public
