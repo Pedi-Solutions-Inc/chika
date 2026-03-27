@@ -43,7 +43,7 @@ For **each** package (`@pedi/chika-types` and `@pedi/chika-sdk`):
 3. Fill in:
    - **Organization or user**: your GitHub username or org
    - **Repository**: `pedi-chika`
-   - **Workflow filename**: `publish.yml`
+   - **Workflow filename**: `release.yml`
 4. Save
 
 > **Note:** Trusted publishing requires npm CLI 11.5.1+ and Node 22.14.0+. The publish workflow is configured to use Node 22.
@@ -119,9 +119,8 @@ The server is not published to npm — this workflow only tracks its version and
 
 | Workflow | File | Trigger | Purpose |
 |---|---|---|---|
-| **Release** | `release.yml` | Manual (workflow_dispatch) | Bump SDK + Types versions, tag, create GitHub release |
+| **Release** | `release.yml` | Manual (workflow_dispatch) | Bump versions, tag, create GitHub release, build and publish to npm via OIDC |
 | **Release Server** | `release-server.yml` | Manual (workflow_dispatch) | Bump server version, tag, create GitHub release |
-| **Publish** | `publish.yml` | Auto (on GitHub release `v*`) | Build and publish SDK + Types to npm via OIDC |
 
 ## How Publishing Authentication Works
 
@@ -151,7 +150,7 @@ npm publish --access public
 ### ENEEDAUTH or "Unable to authenticate"
 
 - Verify trusted publisher is configured for **both** packages on npmjs.com
-- Check that the workflow filename is exactly `publish.yml` (case-sensitive, including extension)
+- Check that the workflow filename is exactly `release.yml` (case-sensitive, including extension)
 - Ensure the repository name and org/user match exactly
 - Confirm the workflow has `id-token: write` permission (it does by default in our config)
 

@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -28,10 +29,16 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          registry-url: https://registry.npmjs.org
 
       - name: Configure git
         run: |
@@ -59,7 +66,15 @@ jobs:
       - name: Bump package versions
         run: |
           VERSION="${{ steps.version.outputs.new }}"
-          node -e "const fs=require('fs'); for(const p of ['packages/types','packages/sdk']){const f=p+'/package.json';const j=JSON.parse(fs.readFileSync(f));j.version='$VERSION';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n');}"
+          node -e "
+            const fs = require('fs');
+            for (const p of ['packages/types', 'packages/sdk']) {
+              const f = p + '/package.json';
+              const j = JSON.parse(fs.readFileSync(f));
+              j.version = '$VERSION';
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+            }
+          "
 
       - name: Update compatibility board
         run: |
@@ -85,3 +100,33 @@ jobs:
             --title "v$VERSION" \
             --generate-notes \
             --latest
+
+      # --- Publish to npm ---
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build packages
+        run: bun run build
+
+      - name: Prepare packages for publish
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          node -e "
+            const fs = require('fs');
+            for (const p of ['packages/types', 'packages/sdk']) {
+              const f = p + '/package.json';
+              const j = JSON.parse(fs.readFileSync(f));
+              j.version = '$VERSION';
+              if (j.dependencies && j.dependencies['@pedi/chika-types']) {
+                j.dependencies['@pedi/chika-types'] = '^$VERSION';
+              }
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+            }
+          "
+
+      - name: Publish @pedi/chika-types
+        run: cd packages/types && npm publish --access public
+
+      - name: Publish @pedi/chika-sdk
+        run: cd packages/sdk && npm publish --access public
