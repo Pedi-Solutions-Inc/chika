@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tool state
+.omc/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Auth config (user-provided, not committed)
+auth.config.ts
+auth.config.js
+
+# Build output
+dist/
+out/
+
+# Logs
+*.log
+
+# Planning/review docs (internal only)
+plan.md
+review-v*.md
