@@ -41,6 +41,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
   const startingRef = useRef(false);
+  const pendingOptimisticIds = useRef(new Set<string>());
 
   const backgroundGraceMs =
     config.backgroundGraceMs ?? (Platform.OS === 'android' ? DEFAULT_BACKGROUND_GRACE_MS : 0);
@@ -48,7 +49,24 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   const callbacks: SessionCallbacks<D> = {
     onMessage: (message) => {
       if (disposedRef.current) return;
-      setMessages((prev: Message<D>[]) => [...prev, message]);
+      setMessages((prev: Message<D>[]) => {
+        // Check if this SSE message reconciles a pending optimistic message.
+        const optimisticIdx = prev.findIndex(
+          (m) =>
+            pendingOptimisticIds.current.has(m.id) &&
+            m.sender_id === message.sender_id &&
+            m.body === message.body &&
+            m.type === message.type,
+        );
+        if (optimisticIdx !== -1) {
+          const optimisticId = prev[optimisticIdx]!.id;
+          pendingOptimisticIds.current.delete(optimisticId);
+          const next = [...prev];
+          next[optimisticIdx] = message;
+          return next;
+        }
+        return [...prev, message];
+      });
       onMessageRef.current?.(message);
     },
     onStatusChange: (nextStatus) => {
@@ -178,6 +196,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
 
       if (optimistic) {
         optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        pendingOptimisticIds.current.add(optimisticId);
         const provisionalMsg: Message<D> = {
           id: optimisticId,
           channel_id: channelId,
@@ -195,18 +214,23 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
         const response = await session.sendMessage(type, body, attributes);
 
         if (optimistic && optimisticId) {
-          setMessages((prev) =>
-            prev.map((m) =>
+          pendingOptimisticIds.current.delete(optimisticId);
+          setMessages((prev) => {
+            // If SSE already reconciled this message, the optimistic ID is gone.
+            const stillPending = prev.some((m) => m.id === optimisticId);
+            if (!stillPending) return prev;
+            return prev.map((m) =>
               m.id === optimisticId
                 ? { ...m, id: response.id, created_at: response.created_at }
                 : m,
-            ),
-          );
+            );
+          });
         }
 
         return response;
       } catch (err) {
         if (optimistic && optimisticId) {
+          pendingOptimisticIds.current.delete(optimisticId);
           setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         }
         throw err;
