@@ -10,26 +10,9 @@ This document covers how to publish `@pedi/chika-types` and `@pedi/chika-sdk` to
 2. Create the `@pedi` organization at [npmjs.com/org/create](https://www.npmjs.com/org/create)
 3. Add any team members who need publish access to the organization
 
-### 2. Generate an npm access token
+### 2. First publish (manual)
 
-1. Go to [npmjs.com/settings/tokens](https://www.npmjs.com/settings/~/tokens)
-2. Click **Generate New Token** → **Granular Access Token**
-3. Configure the token:
-   - **Name**: `pedi-chika-github-actions`
-   - **Expiration**: Choose based on your security policy (e.g., 90 days, 1 year)
-   - **Packages and scopes**: Read and write, scoped to `@pedi`
-4. Copy the generated token
-
-### 3. Add the token to GitHub
-
-1. Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret**
-3. Name: `NPM_TOKEN`
-4. Value: paste the npm token from the previous step
-
-### 4. First publish (manual)
-
-The first publish of each package must be done manually because npm requires the `--access public` flag for initial scoped package creation, and the organization must already exist.
+The first publish of each package must be done manually to create the packages on npm.
 
 ```bash
 # Install dependencies and build
@@ -42,7 +25,6 @@ npm publish --access public
 
 # Update SDK dependency from workspace protocol to real version
 cd ../sdk
-# Temporarily replace workspace:* with the actual version
 npm pkg set "dependencies.@pedi/chika-types=^1.0.0"
 npm publish --access public
 
@@ -50,7 +32,31 @@ npm publish --access public
 npm pkg set "dependencies.@pedi/chika-types=workspace:*"
 ```
 
-After the first publish, all subsequent releases are handled by GitHub Actions.
+### 3. Configure trusted publishers
+
+After the first publish, set up trusted publishing so GitHub Actions can publish without tokens.
+
+For **each** package (`@pedi/chika-types` and `@pedi/chika-sdk`):
+
+1. Go to [npmjs.com](https://www.npmjs.com) → your package → **Settings** → **Trusted Publisher**
+2. Click **GitHub Actions**
+3. Fill in:
+   - **Organization or user**: your GitHub username or org
+   - **Repository**: `pedi-chika`
+   - **Workflow filename**: `publish.yml`
+4. Save
+
+> **Note:** Trusted publishing requires npm CLI 11.5.1+ and Node 22.14.0+. The publish workflow is configured to use Node 22.
+
+### 4. (Recommended) Restrict token access
+
+Once trusted publishing is verified working:
+
+1. Go to each package's **Settings** → **Publishing access**
+2. Select **"Require two-factor authentication and disallow tokens"**
+3. Save
+
+This ensures packages can only be published via the trusted GitHub Actions workflow, eliminating the risk of leaked tokens.
 
 ## Automated Releases
 
@@ -71,7 +77,7 @@ This will:
 - Add a row to `COMPATIBILITY.md`
 - Commit, tag as `v1.1.0`, and push
 - Create a GitHub release with auto-generated notes
-- Trigger the **Publish** workflow which builds and publishes both packages to npm
+- Trigger the **Publish** workflow which builds and publishes both packages to npm via OIDC
 
 ### Releasing the Server
 
@@ -115,7 +121,18 @@ The server is not published to npm — this workflow only tracks its version and
 |---|---|---|---|
 | **Release** | `release.yml` | Manual (workflow_dispatch) | Bump SDK + Types versions, tag, create GitHub release |
 | **Release Server** | `release-server.yml` | Manual (workflow_dispatch) | Bump server version, tag, create GitHub release |
-| **Publish** | `publish.yml` | Auto (on GitHub release `v*`) | Build and publish SDK + Types to npm |
+| **Publish** | `publish.yml` | Auto (on GitHub release `v*`) | Build and publish SDK + Types to npm via OIDC |
+
+## How Publishing Authentication Works
+
+The publish workflow uses **npm trusted publishing** (OIDC) instead of long-lived npm tokens. When the workflow runs:
+
+1. GitHub Actions generates a short-lived OIDC token
+2. npm verifies the token matches the trusted publisher config (repo + workflow filename)
+3. npm exchanges it for a temporary publish token scoped to that single operation
+4. The package is published — no secrets stored in GitHub
+
+This is more secure than token-based auth because there are no credentials to leak, rotate, or manage.
 
 ## Troubleshooting
 
@@ -131,13 +148,16 @@ Scoped packages default to private. The publish workflow uses `--access public`,
 npm publish --access public
 ```
 
-### npm token expired
+### ENEEDAUTH or "Unable to authenticate"
 
-Generate a new token on npmjs.com and update the `NPM_TOKEN` secret in GitHub repository settings.
+- Verify trusted publisher is configured for **both** packages on npmjs.com
+- Check that the workflow filename is exactly `publish.yml` (case-sensitive, including extension)
+- Ensure the repository name and org/user match exactly
+- Confirm the workflow has `id-token: write` permission (it does by default in our config)
 
 ### Publish workflow succeeded but packages not on npm
 
-Check that the `NPM_TOKEN` secret is set and hasn't expired. Look at the workflow run logs in the Actions tab for specific error messages.
+Check the workflow run logs in the Actions tab for specific error messages. If using trusted publishing, ensure the configuration on npmjs.com matches the repository and workflow.
 
 ### Version mismatch between types and SDK
 
