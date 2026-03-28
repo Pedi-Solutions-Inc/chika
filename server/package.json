@@ -1,6 +1,6 @@
 {
   "name": "chika-server",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "scripts": {
     "dev": "bun run --hot src/index.ts",
