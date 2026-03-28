@@ -192,16 +192,8 @@ channels.get('/:channelId/unread', async (c) => {
   }
 
   const channel = await findChannel(channelId);
-  if (!channel) {
-    return c.json({ error: 'Channel not found' }, 404);
-  }
-  if (channel.status === 'closed') {
+  if (channel?.status === 'closed') {
     return c.json({ error: 'Channel is closed' }, 410);
-  }
-
-  const participant = channel.participants.find((p) => p.id === participantId);
-  if (!participant) {
-    return c.json({ error: 'Participant not found in channel' }, 403);
   }
 
   return streamSSE(c, async (stream) => {
@@ -211,7 +203,18 @@ channels.get('/:channelId/unread', async (c) => {
       unsubscribeUnread(channelId, participantId, conn);
     });
 
-    const { unread_count, last_message_at } = await getUnreadCount(channelId, participantId);
+    let unread_count = 0;
+    let last_message_at: string | null = null;
+
+    if (channel) {
+      const participant = channel.participants.find((p) => p.id === participantId);
+      if (participant) {
+        const counts = await getUnreadCount(channelId, participantId);
+        unread_count = counts.unread_count;
+        last_message_at = counts.last_message_at;
+      }
+    }
+
     await stream.writeSSE({
       event: 'unread_snapshot',
       data: JSON.stringify({
