@@ -299,6 +299,8 @@ export async function getUnreadCount(
       $facet: {
         unread: [
           ...(lastReadId ? [{ $match: { _id: { $gt: lastReadId } } }] : []),
+          // Exclude the participant's own messages from the unread count
+          { $match: { sender_id: { $ne: participantId } } },
           { $count: 'total' as const },
         ],
         latest: [
