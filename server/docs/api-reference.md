@@ -106,7 +106,8 @@ Send a message to a channel. The sender must be a participant (must have joined 
     "device": "ios",
     "app_version": "2.1.0",
     "location": { "latitude": 14.5995, "longitude": 120.9842 }
-  }
+  },
+  "idempotency_key": "optimistic_1711612860000_a3b5c"
 }
 ```
 
@@ -116,6 +117,7 @@ Send a message to a channel. The sender must be a participant (must have joined 
 | `type` | string | Yes | Min 1 character |
 | `body` | string | Yes | 1 - 10,000 characters |
 | `attributes` | object | No | Any key-value pairs |
+| `idempotency_key` | string | No | 1-64 characters. Used for retry deduplication. If a message with the same channel + key already exists, the original message's response is returned. |
 
 **Success Response (201):**
 
@@ -127,6 +129,8 @@ Send a message to a channel. The sender must be a participant (must have joined 
 ```
 
 The message is persisted to MongoDB and broadcast to all connected SSE streams for this channel.
+
+**Idempotency:** When `idempotency_key` is provided and a message with the same key already exists in this channel, the server returns the original message's `id` and `created_at` with status 201 — no duplicate message is created and no SSE broadcast occurs. This allows safe client retry without duplicate messages.
 
 **Error Responses:**
 

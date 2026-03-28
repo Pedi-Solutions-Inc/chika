@@ -119,7 +119,7 @@ cd server && bunx tsc --noEmit              # Check server (has own tsconfig)
 ## MongoDB Collections
 
 - `channels` — Indexed on `{ status: 1 }` and `{ 'participants.id': 1, status: 1 }`
-- `messages` — Indexed on `{ channel_id: 1, created_at: 1 }` and `{ created_at: 1 }`
+- `messages` — Indexed on `{ channel_id: 1, created_at: 1 }`, `{ channel_id: 1, _id: 1 }`, and `{ channel_id: 1, idempotency_key: 1 }` (unique, sparse)
 
 ## SSE Behavior
 
@@ -127,18 +127,27 @@ cd server && bunx tsc --noEmit              # Check server (has own tsconfig)
 - `Last-Event-ID` header triggers replay of missed messages on reconnect (ULID-based ordering)
 - `stream.onAbort` handles client disconnect cleanup
 - `idleTimeout: 0` on Bun.serve prevents premature connection termination
-- SDK disables `pollingInterval` and manages reconnection manually with 3s delay
+- SDK disables `pollingInterval` and manages reconnection with exponential backoff (base 3s, max 30s, jitter)
 
 ## SDK Architecture
 
 The SDK provides three APIs:
-- `useChat` hook (primary) — manages session lifecycle, AppState, reconnection, message accumulation, deduplication. Auto-marks messages as read on unmount.
+- `useChat` hook (primary) — manages session lifecycle, AppState, reconnection, message accumulation, deduplication, offline queue, per-message status. Auto-marks messages as read on unmount.
 - `useUnread` hook — per-channel SSE-backed unread notification stream. Returns `{ unreadCount, hasUnread, lastMessageAt, error }`. Supports `enabled` toggle to pause when chat is active.
-- `createChatSession` (lower-level) — imperative callback-based API for non-React or custom integrations
+- `createChatSession` (lower-level) — imperative callback-based API with retry wrapping for non-React or custom integrations
+
+### Network Resilience (enabled by default, togglable via `ChatConfig.resilience`)
+- **Retry**: HTTP calls (join, send, markAsRead) wrapped with `withRetry()` — exponential backoff, error classification (`HttpError` status-based), 429 Retry-After support
+- **SSE Backoff**: Exponential backoff with jitter replaces fixed-delay reconnection. Network-aware: waits for connectivity before attempting reconnect.
+- **Offline Queue**: In-memory message queue (module-scope, survives remounts) with per-message status tracking. Optional persistent storage via `QueueStorage` adapter (auto-detects MMKV > AsyncStorage).
+- **Network Monitor**: Optional `@react-native-community/netinfo` integration. Auto-retries failed joins on connectivity return. Injectable for custom implementations.
+- **Idempotency**: Client sends `idempotency_key` in message body. Server enforces via sparse unique index — prevents duplicate messages on retry.
+- Set `resilience: false` to disable all features and get exact pre-resilience behavior.
 
 ### Shared SSE Utility
-- `createSSEConnection` — extracted SSE connection primitive used by both `session.ts` and `useUnread`. Handles EventSource lifecycle, reconnection, heartbeat, error/410 detection. Accepts `customEvents` array for extensibility.
+- `createSSEConnection` — extracted SSE connection primitive used by both `session.ts` and `useUnread`. Handles EventSource lifecycle, exponential backoff reconnection, network-aware reconnect, error/410 detection. Accepts `customEvents` array for extensibility.
 
 ### AppState Handling (React Native)
 - **iOS:** Tears down SSE on `inactive`/`background`, reconnects on `active`
 - **Android:** Only tears down on `background` (not `inactive` — keyboards, dialogs, overlays trigger `inactive`). 2-second grace period before teardown to handle brief transitions.
+- Message queue survives session teardown on background — flushes on reconnect.

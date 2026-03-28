@@ -34,6 +34,8 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 - `getChannelMessages` is capped at 200 messages (matches internal history max)
 - `addParticipant` upserts: updates profile data if participant exists, inserts if new
 - SSE stream endpoint rejects closed channels with 410
+- **Idempotency:** `POST /channels/:channelId/messages` accepts optional `idempotency_key` (string, 1-64 chars). Enforced by sparse unique index on `{ channel_id, idempotency_key }`. On duplicate (MongoDB E11000), returns the original message's `id` and `created_at` without re-broadcasting. Messages without a key have no dedup overhead (sparse index).
+- `insertMessage` runs `insertOne` first, then `updateOne` for `last_activity_at` as best-effort (logged at warn on failure, never masks a successful insert)
 - `last_read_message_id` tracked per participant in the channel document for unread counting
 - `updateLastRead` only advances the read cursor, never regresses (uses `$elemMatch` with `$lt` guard)
 - `/join` auto-marks messages as read by setting `last_read_message_id` to the latest message
@@ -52,6 +54,7 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 ### Message
 - `sender_role` — string (matches participant's `role`, or `"system"` for internal messages)
 - `sender_id` — participant ID, or `null` for system messages
+- `idempotency_key` — optional string (1-64 chars), used for client retry deduplication
 
 ## Adding a New Endpoint
 
