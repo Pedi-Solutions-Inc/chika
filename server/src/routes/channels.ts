@@ -7,6 +7,7 @@ import {
   sendMessageRequestSchema,
   markReadRequestSchema,
 } from '@pedi/chika-types';
+import { buildRequestInfo, runInterceptors, runAfterSend } from '../plugins';
 import {
   findOrCreateChannel,
   addParticipant,
@@ -107,18 +108,27 @@ channels.post(
       created_at: now,
     };
 
-    await insertMessage(doc);
+    const request = buildRequestInfo(c);
+    const intercepted = await runInterceptors(doc, channel, request, 'client');
+    if ('blocked' in intercepted) {
+      return c.json({ error: intercepted.reason }, 403);
+    }
+    const finalDoc = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
 
-    const message = toMessage(doc);
+    await insertMessage(finalDoc);
+
+    const message = toMessage(finalDoc);
     await broadcast(channelId, message);
 
     await broadcastToChannel(channelId, body.sender_id, 'unread_update', {
       channel_id: channelId,
-      message_id: messageId,
+      message_id: finalDoc._id,
       created_at: now,
     });
 
-    return c.json({ id: messageId, created_at: now }, 201);
+    runAfterSend(message, channelId, channel.participants, request, 'client');
+
+    return c.json({ id: finalDoc._id, created_at: now }, 201);
   },
 );
 

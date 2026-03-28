@@ -6,14 +6,14 @@
 Client (SDK)
     │
     ├── POST /channels/:id/join       → MongoDB upsert + auto-mark-read
-    ├── POST /channels/:id/messages   → MongoDB insert + SSE broadcast + unread notify
+    ├── POST /channels/:id/messages   → [Plugin intercept] → MongoDB insert + SSE broadcast + unread notify → [Plugin afterSend]
     ├── GET  /channels/:id/stream     → SSE connection (in-memory)
     ├── GET  /channels/:id/unread     → SSE unread notification stream (per participant)
     └── POST /channels/:id/read       → Mark messages as read (advance cursor)
                                            │
 Backend Services                           │
     │                                      │
-    ├── POST /internal/.../messages   → MongoDB insert + SSE broadcast + unread notify
+    ├── POST /internal/.../messages   → [Plugin intercept] → MongoDB insert + SSE broadcast + unread notify → [Plugin afterSend]
     ├── GET  /internal/.../messages   → MongoDB query
     └── POST /internal/.../close      → MongoDB update + disconnect streams
 ```
@@ -169,7 +169,10 @@ Validates request bodies and query parameters using schemas from `@pedi/chika-ty
 ### 7. API Key Middleware (`src/middleware/api-key.ts`)
 Applied to `/internal/*` routes only. Validates the `X-Api-Key` header using `crypto.timingSafeEqual` to prevent timing attacks. Pre-checks buffer length to avoid information leakage.
 
-### 8. Global Error Handler
+### 8. Plugin Pipeline (`src/plugins/`)
+Applied inline within the message-send handlers in `channels.ts` and `internal.ts`. **Interceptors** run sequentially before database insert (can block or modify messages). **AfterSend** hooks run in parallel after broadcast (fire-and-forget). Plugins are loaded from the gitignored `server/plugins/` directory at startup. See [Plugins](./plugins.md) for full documentation.
+
+### 9. Global Error Handler
 Catches unhandled exceptions, logs them, reports to Sentry (if configured), and returns a generic `500 Internal server error` response.
 
 ## Database Operations
@@ -221,6 +224,11 @@ server/
     ├── unread-broadcaster.ts     # In-memory SSE connection manager (unread notifications)
     ├── sentry.ts                 # Sentry initialization
     ├── channel-cleanup.ts        # Hourly stale channel cleanup job
+    ├── plugins/
+    │   ├── types.ts              # Plugin interfaces, definePlugin()
+    │   ├── loader.ts             # Plugin discovery, dynamic import, init
+    │   ├── runner.ts             # Interceptor pipeline, afterSend execution, buildRequestInfo
+    │   └── index.ts              # Re-exports
     ├── middleware/
     │   ├── api-key.ts            # Timing-safe API key validation
     │   └── auth.ts               # Optional token auth — loads auth.config.ts, caches results

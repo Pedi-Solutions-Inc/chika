@@ -10,6 +10,7 @@ import { rateLimiter } from 'hono-rate-limiter';
 import { startChannelCleanup, stopChannelCleanup } from './channel-cleanup';
 import { initSentry, captureException } from './sentry';
 import { initAuth, requireAuth } from './middleware/auth';
+import { loadPlugins, destroyPlugins } from './plugins';
 import { env } from './env';
 
 const app = new Hono();
@@ -66,6 +67,7 @@ app.route('/internal/channels', internal);
 initSentry();
 await connectDb();
 await initAuth();
+await loadPlugins();
 startChannelCleanup();
 
 console.log(`chika-server listening on :${env.PORT}`);
@@ -73,6 +75,7 @@ console.log(`chika-server listening on :${env.PORT}`);
 async function shutdown() {
   console.log('Shutting down...');
   stopChannelCleanup();
+  await destroyPlugins();
 
   const channelIds = [...getAllChannelIds()];
   await Promise.allSettled(channelIds.map((id) => disconnectChannel(id)));

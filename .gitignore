@@ -24,6 +24,10 @@ Thumbs.db
 auth.config.ts
 auth.config.js
 
+# Plugin implementations (user-provided, not committed)
+server/plugins/*
+!server/plugins/_example.ts
+
 # Build output
 dist/
 out/
