@@ -1,6 +1,6 @@
 {
   "name": "@pedi/chika-sdk",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "React Native SDK for Pedi Chika chat service",
   "license": "MIT",
   "repository": {
