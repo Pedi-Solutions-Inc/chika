@@ -231,6 +231,8 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
     },
 
     markAsRead: async (messageId: string) => {
+      // markAsRead intentionally does NOT use sessionAbort.signal — it must
+      // survive disconnect() since it's called on unmount right before disconnect.
       const readFn = async (): Promise<void> => {
         const res = await fetch(`${serviceUrl}/channels/${channelId}/read`, {
           method: 'POST',
@@ -239,7 +241,6 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
             participant_id: profile.id,
             message_id: messageId,
           }),
-          signal: sessionAbort.signal,
         });
         if (!res.ok) {
           await throwHttpError(res);
@@ -248,7 +249,7 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
 
       if (retryConfig) {
         try {
-          await withRetry(readFn, MARK_READ_RETRY_CONFIG, sessionAbort.signal);
+          await withRetry(readFn, MARK_READ_RETRY_CONFIG);
         } catch (err) {
           // Surface non-retryable errors (403, 404) for dev diagnostics
           if (err instanceof HttpError) {

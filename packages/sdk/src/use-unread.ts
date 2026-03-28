@@ -39,26 +39,35 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
   const backgroundGraceMs =
     config.backgroundGraceMs ?? (Platform.OS === 'android' ? DEFAULT_BACKGROUND_GRACE_MS : 0);
 
-  const [monitor, setMonitor] = useState<NetworkMonitor | null>(null);
+  const [monitorReady, setMonitorReady] = useState(false);
+  const monitorRef = useRef<NetworkMonitor | null>(null);
   const resilienceEnabled = config.resilience !== false;
   const injectedMonitor =
     typeof config.resilience === 'object' ? config.resilience.networkMonitor : undefined;
 
   useEffect(() => {
     if (!resilienceEnabled) {
-      setMonitor(null);
+      monitorRef.current = null;
+      setMonitorReady(true);
       return;
     }
     if (injectedMonitor) {
-      setMonitor(injectedMonitor);
+      monitorRef.current = injectedMonitor;
+      setMonitorReady(true);
       return;
     }
-    const m = createNetworkMonitor();
-    setMonitor(m);
-    return () => {
-      m.dispose();
-      setMonitor(null);
-    };
+    try {
+      const m = createNetworkMonitor();
+      monitorRef.current = m;
+      setMonitorReady(true);
+      return () => {
+        m.dispose();
+        monitorRef.current = null;
+      };
+    } catch {
+      monitorRef.current = null;
+      setMonitorReady(true);
+    }
   }, [resilienceEnabled, injectedMonitor]);
 
   const connect = useCallback(() => {
@@ -75,7 +84,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
         headers: customHeaders,
         reconnectDelayMs: configRef.current.reconnectDelayMs,
         customEvents: UNREAD_CUSTOM_EVENTS,
-        networkMonitor: monitor ?? undefined,
+        networkMonitor: monitorRef.current ?? undefined,
       },
       {
         onOpen: () => {
@@ -107,7 +116,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
         },
       },
     );
-  }, [channelId, participantId, monitor]);
+  }, [channelId, participantId]);
 
   const disconnect = useCallback(() => {
     connRef.current?.close();
@@ -124,8 +133,8 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
       return;
     }
 
-    // Wait for monitor before connecting (avoids double-connect on mount)
-    if (resilienceEnabled && !monitor) return;
+    // Don't connect until monitor initialization is complete
+    if (!monitorReady) return;
 
     connect();
 
@@ -136,7 +145,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
         backgroundTimerRef.current = null;
       }
     };
-  }, [channelId, participantId, enabled, connect, disconnect]);
+  }, [channelId, participantId, enabled, monitorReady, connect, disconnect]);
 
   useEffect(() => {
     if (!enabled) return;

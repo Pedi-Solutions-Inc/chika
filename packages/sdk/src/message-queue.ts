@@ -320,6 +320,7 @@ export class MessageQueue {
           entry.status = 'failed';
           entry.error = err instanceof Error ? err : new Error(String(err));
           entry.retryCount++;
+          entry.reject(entry.error);
           this.config.onStatusChange?.();
           this.persist();
 
