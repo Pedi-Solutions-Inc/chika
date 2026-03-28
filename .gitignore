@@ -38,4 +38,5 @@ out/
 
 # Planning/review docs (internal only)
 plan.md
+plan-deployment.md
 review-v*.md
