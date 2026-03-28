@@ -54,6 +54,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   const startingRef = useRef(false);
   const pendingOptimisticIds = useRef(new Set<string>());
   const [monitor, setMonitor] = useState<NetworkMonitor | null>(null);
+  const [monitorReady, setMonitorReady] = useState(false);
   const monitorRef = useRef<NetworkMonitor | null>(null);
   monitorRef.current = monitor;
   const queueRef = useRef<MessageQueue | null>(null);
@@ -80,18 +81,28 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   useEffect(() => {
     if (!resilienceEnabled) {
       setMonitor(null);
+      setMonitorReady(true);
       return;
     }
     if (injectedMonitor) {
       setMonitor(injectedMonitor);
+      setMonitorReady(true);
       return; // user owns lifecycle
     }
-    const m = createNetworkMonitor();
-    setMonitor(m);
-    return () => {
-      m.dispose();
+    try {
+      const m = createNetworkMonitor();
+      setMonitor(m);
+      setMonitorReady(true);
+      return () => {
+        m.dispose();
+        setMonitor(null);
+      };
+    } catch {
+      // NetInfo native module may be present but not linked — fall back to
+      // no monitor so the session effect guard doesn't block forever.
       setMonitor(null);
-    };
+      setMonitorReady(true);
+    }
   }, [resilienceEnabled, injectedMonitor]);
 
   const callbacks: SessionCallbacks<D> = {
@@ -205,8 +216,8 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   // Session lifecycle
   useEffect(() => {
     disposedRef.current = false;
-    // Don't start until monitor is resolved (or resilience is off)
-    if (resilienceEnabled && !monitor) return;
+    // Don't start until monitor initialization is complete
+    if (!monitorReady) return;
     startSession();
 
     return () => {
@@ -224,7 +235,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
       sessionRef.current?.disconnect();
       sessionRef.current = null;
     };
-  }, [channelId, monitor]);
+  }, [channelId, monitorReady]);
 
   // Module-scope queue lifecycle (ref-counted, survives remounts)
   useEffect(() => {
