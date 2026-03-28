@@ -19,6 +19,7 @@ Provides a drop-in React hook (`useChat`) that connects your React Native app to
 
 - `useChat<D>()` React hook with full TypeScript generics
 - `createChatSession<D>()` imperative API for non-React usage
+- **`useUnread()` hook** — Real-time unread count tracking via dedicated SSE stream with passive listening support
 - Automatic SSE reconnection with configurable delay
 - Platform-aware AppState handling (iOS vs Android)
 - Optimistic message sending with deduplication
@@ -44,6 +45,31 @@ function ChatScreen({ bookingId, user }) {
   await sendMessage('chat', 'Hello!', { device: 'ios' });
 }
 ```
+
+### Unread Notifications
+
+Monitor unread message counts in real-time — even for channels the user hasn't joined yet:
+
+```typescript
+import { useUnread } from '@pedi/chika-sdk';
+
+function ChatListItem({ channelId, userId, config }) {
+  const { unreadCount, hasUnread, lastMessageAt } = useUnread({
+    config,
+    channelId,
+    participantId: userId,
+  });
+
+  return (
+    <View>
+      <Text>{channelId}</Text>
+      {hasUnread && <Badge count={unreadCount} />}
+    </View>
+  );
+}
+```
+
+The hook handles SSE reconnection and AppState-aware lifecycle management automatically. Disable it with `enabled: false` when `useChat` is already active on the same channel.
 
 **Peer dependencies:** `react >= 18`, `react-native >= 0.72`
 

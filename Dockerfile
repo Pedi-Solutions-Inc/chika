@@ -15,7 +15,18 @@ COPY server/package.json         ./server/
 RUN bun install --frozen-lockfile --production
 
 # =============================================================================
-# Stage 2 — runner
+# Stage 2 — optional server files (plugins, auth config)
+# =============================================================================
+FROM oven/bun:1-alpine AS optionals
+
+COPY server/ /tmp/server/
+RUN mkdir -p /out/plugins /out/config && \
+    cp -a /tmp/server/plugins/. /out/plugins/ 2>/dev/null; \
+    cp /tmp/server/auth.config.* /out/config/ 2>/dev/null; \
+    true
+
+# =============================================================================
+# Stage 3 — runner
 # =============================================================================
 FROM oven/bun:1-alpine AS runner
 
@@ -30,8 +41,11 @@ COPY --chown=bun:bun packages/types/ ./packages/types/
 
 # Server source
 COPY --chown=bun:bun server/src/                       ./server/src/
-COPY --chown=bun:bun server/auth.config.*              ./server/
 COPY --chown=bun:bun server/package.json               ./server/
+
+# Optional: plugins and auth config (won't fail if missing)
+COPY --from=optionals --chown=bun:bun /out/plugins/ ./server/plugins/
+COPY --from=optionals --chown=bun:bun /out/config/  ./server/
 
 # Root package.json for Bun workspace resolution
 COPY --chown=bun:bun package.json ./

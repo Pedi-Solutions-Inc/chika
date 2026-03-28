@@ -118,12 +118,15 @@ cd server && bunx tsc --noEmit # server
 - IP-based rate limiting on public endpoints
 - API key-authenticated internal endpoints for system integrations
 - Pluggable token authentication via `auth.config.ts` (see [Authentication](#authentication))
+- **Plugin architecture** — Extend server behavior with interceptors (block/modify messages before storage) and after-send hooks (fire-and-forget side effects). See [Plugins](#plugins)
+- **Real-time unread notifications** — SSE-backed per-participant unread counts with passive listening (monitor channels before joining). See [Unread Notifications](#unread-notifications)
 - Stale channel auto-cleanup (24h inactivity)
 - Sentry error tracking (optional)
 
 ### SDK
 - `useChat<D>()` React hook with full TypeScript generics
 - `createChatSession<D>()` imperative API for non-React usage
+- **`useUnread()` hook** — Real-time unread count tracking with AppState-aware lifecycle management. See [Unread Notifications](#unread-notifications)
 - Automatic SSE reconnection with configurable delay
 - Platform-aware AppState handling (iOS vs Android)
 - Optimistic message sending with automatic deduplication
@@ -189,6 +192,82 @@ useChat<PediChat>({
   headers: { Authorization: 'Driver <token>' },
 });
 ```
+
+## Plugins
+
+The server supports a plugin architecture that lets you extend message processing without modifying source code. Plugins live in the `server/plugins/` directory (gitignored) and hook into two phases of the message lifecycle:
+
+- **Interceptors** — Run sequentially before a message is stored. Can inspect, modify, or block messages (e.g. content filters, rate limiters, message transformers).
+- **After-send hooks** — Run in parallel after a message is broadcast. Fire-and-forget side effects (e.g. forwarding to external APIs, analytics, push notifications).
+
+```typescript
+import { definePlugin } from '../src/plugins';
+
+export default definePlugin({
+  name: 'content-filter',
+  priority: 10,
+  critical: true,
+
+  intercept({ message, source }) {
+    if (source === 'system') return { action: 'allow' };
+    if (containsProfanity(message.body)) {
+      return { action: 'block', reason: 'Inappropriate content' };
+    }
+    return { action: 'allow' };
+  },
+
+  async afterSend({ message, channelId, request }) {
+    await fetch('https://api.example.com/events', {
+      method: 'POST',
+      headers: { Authorization: request.authorization! },
+      body: JSON.stringify({ message, channelId }),
+    });
+  },
+});
+```
+
+Plugins are priority-ordered, support configurable timeouts, and can be marked as `critical` (fail-closed) or non-critical (fail-open). Copy `server/plugins/_example.ts` to get started. See the full [Plugin Documentation](./server/docs/plugins.md) for details.
+
+## Unread Notifications
+
+Real-time unread message tracking via a dedicated SSE stream. Supports **passive listening** — clients can monitor unread counts for channels they haven't joined yet.
+
+### Server
+
+`GET /channels/:id/unread?participant_id=<id>` opens an SSE connection that delivers three event types:
+
+| Event | When | Payload |
+|-------|------|---------|
+| `unread_snapshot` | On connect | `{ channel_id, unread_count, last_message_at }` |
+| `unread_update` | New message from another participant | `{ channel_id, message_id, created_at }` |
+| `unread_clear` | After marking messages as read | `{ channel_id, unread_count }` |
+
+Mark messages as read by calling `POST /channels/:id/read` with `{ participant_id, message_id }`.
+
+### SDK
+
+The `useUnread()` hook connects to the unread SSE endpoint and manages the full mobile lifecycle:
+
+```typescript
+import { useUnread } from '@pedi/chika-sdk';
+
+function ChatListItem({ channelId, userId, config }) {
+  const { unreadCount, hasUnread, lastMessageAt } = useUnread({
+    config,
+    channelId,
+    participantId: userId,
+  });
+
+  return (
+    <View>
+      <Text>{channelId}</Text>
+      {hasUnread && <Badge count={unreadCount} />}
+    </View>
+  );
+}
+```
+
+The hook handles SSE reconnection, AppState-aware teardown/reconnect (with Android grace periods), and can be paused via `enabled: false` when `useChat` is already active on the same channel.
 
 ## Documentation
 
