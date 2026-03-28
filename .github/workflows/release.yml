@@ -37,13 +37,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Determine new version
         id: version
@@ -63,45 +58,7 @@ jobs:
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           echo "Bumping $CURRENT → $NEW"
 
-      - name: Bump package versions
-        run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          node -e "
-            const fs = require('fs');
-            for (const p of ['packages/types', 'packages/sdk']) {
-              const f = p + '/package.json';
-              const j = JSON.parse(fs.readFileSync(f));
-              j.version = '$VERSION';
-              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
-            }
-          "
-
-      - name: Update compatibility board
-        run: |
-          SDK_VERSION="${{ steps.version.outputs.new }}"
-          SERVER_VERSION=$(node -p "require('./server/package.json').version")
-          DATE=$(date +%Y-%m-%d)
-          sed -i "s/^|--------|-------------|------|$/|--------|-------------|------|\n| $SERVER_VERSION | $SDK_VERSION | $DATE |/" COMPATIBILITY.md
-
-      - name: Commit and tag
-        run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          git add packages/types/package.json packages/sdk/package.json COMPATIBILITY.md
-          git commit -m "release: v$VERSION"
-          git tag "v$VERSION"
-          git push origin HEAD --tags
-
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ steps.version.outputs.new }}"
-          gh release create "v$VERSION" \
-            --title "v$VERSION" \
-            --generate-notes \
-            --latest
-
-      # --- Publish to npm ---
+      # --- Build and publish first ---
 
       - name: Install dependencies
         run: bun install
@@ -130,3 +87,51 @@ jobs:
 
       - name: Publish @pedi/chika-sdk
         run: cd packages/sdk && npm publish --access public
+
+      # --- Commit version bump only after successful publish ---
+
+      - name: Reset package.json changes for clean commit
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          node -e "
+            const fs = require('fs');
+            for (const p of ['packages/types', 'packages/sdk']) {
+              const f = p + '/package.json';
+              const j = JSON.parse(fs.readFileSync(f));
+              j.version = '$VERSION';
+              if (j.dependencies && j.dependencies['@pedi/chika-types']) {
+                j.dependencies['@pedi/chika-types'] = 'workspace:*';
+              }
+              fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+            }
+          "
+
+      - name: Update compatibility board
+        run: |
+          SDK_VERSION="${{ steps.version.outputs.new }}"
+          SERVER_VERSION=$(node -p "require('./server/package.json').version")
+          DATE=$(date +%Y-%m-%d)
+          sed -i "s/^|--------|-------------|------|$/|--------|-------------|------|\n| $SERVER_VERSION | $SDK_VERSION | $DATE |/" COMPATIBILITY.md
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit, tag, and push
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          git add packages/types/package.json packages/sdk/package.json COMPATIBILITY.md
+          git commit -m "release: v$VERSION"
+          git tag "v$VERSION"
+          git push origin HEAD --tags
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            --latest
