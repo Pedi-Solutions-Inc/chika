@@ -253,13 +253,15 @@ data: {"channel_id":"booking_456","unread_count":0}
 
 Sent every 30 seconds. Same as the chat stream heartbeat.
 
+**Passive Listening:**
+
+The endpoint does not require the channel to exist or the participant to have joined. If the channel doesn't exist yet or the participant isn't in it, the server sends an `unread_snapshot` with count `0` and keeps the connection open. When the channel is created and messages arrive, `unread_update` events will be delivered in real-time. This enables use cases like showing unread indicators on a list page before the user has entered the chat.
+
 **Error Responses:**
 
 | Status | Body | Condition |
 |--------|------|-----------|
 | 400 | `{ "error": "participant_id query parameter is required" }` | Missing query parameter |
-| 403 | `{ "error": "Participant not found in channel" }` | Participant has not joined the channel |
-| 404 | `{ "error": "Channel not found" }` | Channel does not exist |
 | 410 | `{ "error": "Channel is closed" }` | Channel has been permanently closed |
 
 ---

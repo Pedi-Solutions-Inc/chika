@@ -38,6 +38,7 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 - `updateLastRead` only advances the read cursor, never regresses (uses `$elemMatch` with `$lt` guard)
 - `/join` auto-marks messages as read by setting `last_read_message_id` to the latest message
 - Unread SSE stream sends `unread_snapshot` on connect, `unread_update` on new messages, `unread_clear` on mark-read
+- Unread SSE is passive: does not require channel to exist or participant to have joined (sends count 0 and listens)
 - `unread_update` events are minimal: `{ channel_id, message_id, created_at }` (no message body)
 
 ## Data Model
