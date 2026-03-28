@@ -53,6 +53,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   onMessageRef.current = onMessage;
   const startingRef = useRef(false);
   const pendingOptimisticIds = useRef(new Set<string>());
+  const markReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [monitor, setMonitor] = useState<NetworkMonitor | null>(null);
   const [monitorReady, setMonitorReady] = useState(false);
   const monitorRef = useRef<NetworkMonitor | null>(null);
@@ -105,6 +106,33 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     }
   }, [resilienceEnabled, injectedMonitor]);
 
+  // Debounced markAsRead: batches rapid incoming messages into a single POST.
+  // Keeps unread count in sync while the user is viewing the chat.
+  function scheduleMarkAsRead(messageId: string): void {
+    if (markReadTimerRef.current) clearTimeout(markReadTimerRef.current);
+    markReadTimerRef.current = setTimeout(() => {
+      markReadTimerRef.current = null;
+      sessionRef.current?.markAsRead(messageId).catch(() => {});
+    }, 500);
+  }
+
+  // Flush pending debounced markAsRead and send a final one with the latest message.
+  // Used by all teardown paths (unmount, background, manual disconnect).
+  function flushMarkReadAndDisconnect(): void {
+    if (markReadTimerRef.current) {
+      clearTimeout(markReadTimerRef.current);
+      markReadTimerRef.current = null;
+    }
+    if (sessionRef.current) {
+      const lastMsg = messagesRef.current[messagesRef.current.length - 1];
+      if (lastMsg) {
+        sessionRef.current.markAsRead(lastMsg.id).catch(() => {});
+      }
+    }
+    sessionRef.current?.disconnect();
+    sessionRef.current = null;
+  }
+
   const callbacks: SessionCallbacks<D> = {
     onMessage: (message) => {
       if (disposedRef.current) return;
@@ -137,6 +165,11 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
         if (s && s.status !== 'sending') {
           queueRef.current?.cancel(matchedOptimisticId);
         }
+      }
+      // Debounced markAsRead keeps unread count in sync while viewing chat.
+      // Only mark for messages from others (not our own SSE echo).
+      if (message.sender_id !== profileRef.current.id) {
+        scheduleMarkAsRead(message.id);
       }
       onMessageRef.current?.(message);
     },
@@ -197,6 +230,14 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
       } else {
         setMessages(session.initialMessages);
       }
+
+      // Mark latest message as read so the server broadcasts unread_clear.
+      // Uses scheduleMarkAsRead (debounced) so that if SSE delivers additional
+      // messages right after join, they're covered by the same batched call.
+      const lastInitMsg = session.initialMessages[session.initialMessages.length - 1];
+      if (lastInitMsg) {
+        scheduleMarkAsRead(lastInitMsg.id);
+      }
     } catch (err) {
       if (disposedRef.current) return;
 
@@ -222,18 +263,11 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
 
     return () => {
       disposedRef.current = true;
-      if (statusRef.current === 'connected' && sessionRef.current) {
-        const lastMsg = messagesRef.current[messagesRef.current.length - 1];
-        if (lastMsg) {
-          sessionRef.current.markAsRead(lastMsg.id).catch(() => {});
-        }
-      }
+      flushMarkReadAndDisconnect();
       if (backgroundTimerRef.current) {
         clearTimeout(backgroundTimerRef.current);
         backgroundTimerRef.current = null;
       }
-      sessionRef.current?.disconnect();
-      sessionRef.current = null;
     };
   }, [channelId, monitorReady]);
 
@@ -296,8 +330,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   // AppState lifecycle
   useEffect(() => {
     function teardownSession(): void {
-      sessionRef.current?.disconnect();
-      sessionRef.current = null;
+      flushMarkReadAndDisconnect();
       setStatus('disconnected');
     }
 
@@ -455,8 +488,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   );
 
   const disconnect = useCallback(() => {
-    sessionRef.current?.disconnect();
-    sessionRef.current = null;
+    flushMarkReadAndDisconnect();
     setStatus('disconnected');
   }, []);
 
