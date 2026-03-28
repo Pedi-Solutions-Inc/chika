@@ -49,7 +49,7 @@ export async function connectDb(): Promise<void> {
     messages().createIndex({ channel_id: 1, _id: 1 }),
     messages().createIndex(
       { channel_id: 1, idempotency_key: 1 },
-      { unique: true, sparse: true },
+      { unique: true, partialFilterExpression: { idempotency_key: { $exists: true } } },
     ),
   ]);
 }
