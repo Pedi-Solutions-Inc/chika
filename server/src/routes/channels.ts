@@ -29,6 +29,7 @@ import {
   broadcastToParticipant,
   broadcastToChannel,
 } from '../unread-broadcaster';
+import { getRequestLogger } from '../middleware/request-logger';
 
 const channels = new Hono();
 
@@ -42,10 +43,18 @@ channels.post(
   async (c) => {
     const channelId = c.req.param('channelId');
     const participant = c.req.valid('json');
+    const reqLog = getRequestLogger(c);
+
+    reqLog.info('participant joining channel', {
+      channelId,
+      participant: participant.name || participant.id,
+      role: participant.role,
+    });
 
     const channel = await findOrCreateChannel(channelId);
 
     if (channel.status === 'closed') {
+      reqLog.warn('join rejected — channel closed', { channelId });
       return c.json({ error: 'Channel is closed' }, 410);
     }
 
@@ -59,6 +68,13 @@ channels.post(
       const lastMsgId = messageDocs[messageDocs.length - 1]!._id;
       await updateLastRead(channelId, participant.id, lastMsgId);
     }
+
+    reqLog.info('participant joined', {
+      channelId,
+      participant: participant.name || participant.id,
+      totalParticipants: updatedChannel.participants.length,
+      messages: msgs.length,
+    });
 
     return c.json({
       channel_id: channelId,
@@ -79,6 +95,7 @@ channels.post(
   }),
   async (c) => {
     const channelId = c.req.param('channelId');
+    const reqLog = getRequestLogger(c);
 
     const channel = await findChannel(channelId);
     if (!channel) {
@@ -94,8 +111,17 @@ channels.post(
 
     const senderParticipant = channel.participants.find((p) => p.id === body.sender_id);
     if (!senderParticipant) {
+      reqLog.warn('sender not in channel', { channelId, senderId: body.sender_id });
       return c.json({ error: 'Sender has not joined this channel' }, 403);
     }
+
+    reqLog.info('sending message', {
+      channelId,
+      messageId,
+      sender: senderParticipant.name || body.sender_id,
+      senderRole: senderParticipant.role,
+      type: body.type,
+    });
 
     const doc: MessageDocument = {
       _id: messageId,
@@ -111,6 +137,7 @@ channels.post(
     const request = buildRequestInfo(c);
     const intercepted = await runInterceptors(doc, channel, request, 'client');
     if ('blocked' in intercepted) {
+      reqLog.warn('message blocked by plugin', { channelId, messageId, reason: intercepted.reason });
       return c.json({ error: intercepted.reason }, 403);
     }
     const finalDoc = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
@@ -128,12 +155,15 @@ channels.post(
 
     runAfterSend(message, channelId, channel.participants, request, 'client');
 
+    reqLog.info('message sent', { channelId, messageId });
+
     return c.json({ id: finalDoc._id, created_at: now }, 201);
   },
 );
 
 channels.get('/:channelId/stream', async (c) => {
   const channelId = c.req.param('channelId');
+  const reqLog = getRequestLogger(c);
 
   const channel = await findChannel(channelId);
   if (!channel) {
@@ -146,10 +176,13 @@ channels.get('/:channelId/stream', async (c) => {
   const lastEventId = c.req.header('Last-Event-ID');
   const sinceTime = c.req.query('since_time');
 
+  reqLog.info('SSE stream opened', { channelId, lastEventId, sinceTime });
+
   return streamSSE(c, async (stream) => {
     const conn = subscribe(channelId, stream);
 
     stream.onAbort(() => {
+      reqLog.info('SSE stream closed', { channelId });
       unsubscribe(channelId, conn);
     });
 
@@ -196,6 +229,7 @@ channels.get('/:channelId/stream', async (c) => {
 channels.get('/:channelId/unread', async (c) => {
   const channelId = c.req.param('channelId');
   const participantId = c.req.query('participant_id');
+  const reqLog = getRequestLogger(c);
 
   if (!participantId) {
     return c.json({ error: 'participant_id query parameter is required' }, 400);
@@ -206,10 +240,15 @@ channels.get('/:channelId/unread', async (c) => {
     return c.json({ error: 'Channel is closed' }, 410);
   }
 
+  const participantName = channel?.participants.find((p) => p.id === participantId)?.name ?? participantId;
+
+  reqLog.info('unread stream opened', { channelId, participant: participantName });
+
   return streamSSE(c, async (stream) => {
     const conn = subscribeUnread(channelId, participantId, stream);
 
     stream.onAbort(() => {
+      reqLog.info('unread stream closed', { channelId, participant: participantName });
       unsubscribeUnread(channelId, participantId, conn);
     });
 
@@ -258,6 +297,7 @@ channels.post(
   async (c) => {
     const channelId = c.req.param('channelId');
     const { participant_id, message_id } = c.req.valid('json');
+    const reqLog = getRequestLogger(c);
 
     const channel = await findChannel(channelId);
     if (!channel) {
@@ -281,6 +321,8 @@ channels.post(
       channel_id: channelId,
       unread_count,
     });
+
+    reqLog.info('marked read', { channelId, participant: participant.name || participant_id, messageId: message_id, unreadCount: unread_count });
 
     return c.json({ success: true });
   },

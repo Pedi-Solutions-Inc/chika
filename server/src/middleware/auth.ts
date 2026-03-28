@@ -1,5 +1,8 @@
 import { createMiddleware } from 'hono/factory';
 import type { AuthConfig, AuthValidatorContext } from '@pedi/chika-types';
+import { createComponentLogger } from '../logger';
+
+const log = createComponentLogger('auth');
 
 // ---------------------------------------------------------------------------
 // Dynamic config loader
@@ -15,22 +18,22 @@ async function loadAuthConfig(): Promise<AuthConfig | null> {
     const cfg: AuthConfig = mod.default ?? mod;
 
     if (typeof cfg.validate !== 'function') {
-      console.warn('[chika-auth] auth.config found but `validate` is not a function — auth disabled');
+      log.warn('auth.config found but validate is not a function — auth disabled');
       authConfig = null;
       return null;
     }
 
-    console.log('[chika-auth] auth.config loaded — token validation enabled');
+    log.info('auth.config loaded — token validation enabled');
     authConfig = cfg;
     return cfg;
   } catch (err: unknown) {
     // Module not found is expected when no auth is configured.
     if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'MODULE_NOT_FOUND') {
-      console.log('[chika-auth] No auth.config found — auth disabled');
+      log.info('no auth.config found — auth disabled');
     } else if (err instanceof Error && err.message?.includes('Cannot find module')) {
-      console.log('[chika-auth] No auth.config found — auth disabled');
+      log.info('no auth.config found — auth disabled');
     } else {
-      console.error('[chika-auth] Failed to load auth.config:', err);
+      log.error('failed to load auth.config', { error: err as Error });
     }
     authConfig = null;
     return null;
@@ -136,7 +139,7 @@ export const requireAuth = createMiddleware(async (c, next) => {
 
     await next();
   } catch (err) {
-    console.error('[chika-auth] Validator threw:', err);
+    log.error('auth validator threw', { error: err as Error });
     return c.json({ error: 'Authentication error' }, 500);
   }
 });

@@ -17,6 +17,7 @@ import {
 import { broadcast, disconnectChannel } from '../broadcaster';
 import { broadcastToChannel } from '../unread-broadcaster';
 import { requireApiKey } from '../middleware/api-key';
+import { getRequestLogger } from '../middleware/request-logger';
 
 const internal = new Hono();
 
@@ -31,6 +32,7 @@ internal.post(
   }),
   async (c) => {
     const channelId = c.req.param('channelId');
+    const reqLog = getRequestLogger(c);
 
     const channel = await findChannel(channelId);
     if (!channel) {
@@ -43,6 +45,8 @@ internal.post(
     const body = c.req.valid('json');
     const now = new Date().toISOString();
     const messageId = `msg_${ulid()}`;
+
+    reqLog.info('sending system message', { channelId, messageId, type: body.type });
 
     const doc: MessageDocument = {
       _id: messageId,
@@ -58,6 +62,7 @@ internal.post(
     const request = buildRequestInfo(c);
     const intercepted = await runInterceptors(doc, channel, request, 'system');
     if ('blocked' in intercepted) {
+      reqLog.warn('system message blocked by plugin', { channelId, messageId, reason: intercepted.reason });
       return c.json({ error: intercepted.reason }, 403);
     }
     const finalDoc = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
@@ -75,6 +80,8 @@ internal.post(
 
     runAfterSend(message, channelId, channel.participants, request, 'system');
 
+    reqLog.info('system message sent', { channelId, messageId });
+
     return c.json({ id: finalDoc._id, created_at: now }, 201);
   },
 );
@@ -88,6 +95,7 @@ internal.get(
   }),
   async (c) => {
     const channelId = c.req.param('channelId');
+    const reqLog = getRequestLogger(c);
 
     const channel = await findChannel(channelId);
     if (!channel) {
@@ -101,6 +109,8 @@ internal.get(
       after: query.after,
     });
 
+    reqLog.debug('message history fetched', { channelId, count: docs.length, hasMore });
+
     return c.json({
       channel_id: channelId,
       participants: channel.participants,
@@ -112,6 +122,9 @@ internal.get(
 
 internal.post('/:channelId/close', async (c) => {
   const channelId = c.req.param('channelId');
+  const reqLog = getRequestLogger(c);
+
+  reqLog.info('closing channel', { channelId });
 
   const closed = await closeChannel(channelId);
   if (!closed) {
@@ -119,10 +132,13 @@ internal.post('/:channelId/close', async (c) => {
     if (!channel) {
       return c.json({ error: 'Channel not found' }, 404);
     }
+    reqLog.warn('channel already closed', { channelId });
     return c.json({ error: 'Channel is already closed' }, 410);
   }
 
   await disconnectChannel(channelId);
+
+  reqLog.info('channel closed', { channelId });
 
   return c.json({ channel_id: channelId, status: 'closed' });
 });

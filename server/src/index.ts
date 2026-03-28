@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { logger } from 'hono/logger';
 import { cors } from 'hono/cors';
 import { bodyLimit } from 'hono/body-limit';
 import { channels } from './routes/channels';
@@ -12,15 +11,18 @@ import { initSentry, captureException } from './sentry';
 import { initAuth, requireAuth } from './middleware/auth';
 import { loadPlugins, destroyPlugins } from './plugins';
 import { env } from './env';
+import { log } from './logger';
+import { requestLogger, getRequestLogger } from './middleware/request-logger';
 
 const app = new Hono();
 
-app.use('*', logger());
+app.use('*', requestLogger);
 app.use('*', cors());
 app.use('*', bodyLimit({ maxSize: 64 * 1024 }));
 
 app.onError((err, c) => {
-  console.error('Unhandled error:', err.message);
+  const reqLog = getRequestLogger(c);
+  reqLog.error('unhandled error', { error: err });
   captureException(err);
   return c.json({ error: 'Internal server error' }, 500);
 });
@@ -70,10 +72,10 @@ await initAuth();
 await loadPlugins();
 startChannelCleanup();
 
-console.log(`chika-server listening on :${env.PORT}`);
+log.info('server started', { port: env.PORT, env: env.NODE_ENV });
 
 async function shutdown() {
-  console.log('Shutting down...');
+  log.info('shutting down');
   stopChannelCleanup();
   await destroyPlugins();
 

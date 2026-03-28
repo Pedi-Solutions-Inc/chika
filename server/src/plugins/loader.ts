@@ -1,6 +1,8 @@
 import { resolve, join } from 'path';
 import type { ChikaPlugin } from './types';
+import { createComponentLogger } from '../logger';
 
+const log = createComponentLogger('plugins');
 const PLUGINS_DIR = resolve(import.meta.dir, '../../plugins');
 
 /** Loaded plugins, pre-sorted by priority. */
@@ -34,7 +36,7 @@ export async function loadPlugins(): Promise<void> {
   try {
     entries = [...glob.scanSync(PLUGINS_DIR)];
   } catch {
-    console.log('[chika-plugins] No plugins/ directory found — running without plugins');
+    log.info('no plugins/ directory found — running without plugins');
     return;
   }
 
@@ -42,7 +44,7 @@ export async function loadPlugins(): Promise<void> {
   entries = entries.filter((e) => !e.startsWith('_')).sort();
 
   if (entries.length === 0) {
-    console.log('[chika-plugins] plugins/ directory is empty — running without plugins');
+    log.info('plugins/ directory is empty — running without plugins');
     return;
   }
 
@@ -55,12 +57,12 @@ export async function loadPlugins(): Promise<void> {
       const plugin: ChikaPlugin = mod.default ?? mod;
 
       if (!plugin.name || typeof plugin.name !== 'string') {
-        console.warn(`[chika-plugins] Skipping ${entry}: missing 'name' property`);
+        log.warn('skipping plugin — missing name property', { file: entry });
         continue;
       }
 
       if (loaded.some((p) => p.name === plugin.name)) {
-        console.warn(`[chika-plugins] Skipping ${entry}: duplicate name "${plugin.name}"`);
+        log.warn('skipping plugin — duplicate name', { file: entry, name: plugin.name });
         continue;
       }
 
@@ -69,9 +71,9 @@ export async function loadPlugins(): Promise<void> {
       }
 
       loaded.push(plugin);
-      console.log(`[chika-plugins] Loaded: ${plugin.name} (priority: ${plugin.priority ?? 100})`);
+      log.info('plugin loaded', { name: plugin.name, priority: plugin.priority ?? 100 });
     } catch (err) {
-      console.error(`[chika-plugins] Failed to load ${entry}:`, err);
+      log.error('failed to load plugin', { file: entry, error: err as Error });
     }
   }
 
@@ -82,5 +84,9 @@ export async function loadPlugins(): Promise<void> {
   interceptors = allPlugins.filter((p) => p.intercept);
   afterSenders = allPlugins.filter((p) => p.afterSend);
 
-  console.log(`[chika-plugins] ${allPlugins.length} plugin(s) active`);
+  log.info('plugins ready', {
+    total: allPlugins.length,
+    interceptors: interceptors.length,
+    afterSenders: afterSenders.length,
+  });
 }
