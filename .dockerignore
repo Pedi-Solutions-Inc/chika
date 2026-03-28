@@ -31,4 +31,9 @@ CLAUDE.md
 README.md
 *.md
 
+# Non-runtime server files
+server/auth.config.example.ts
+server/auth.config.d.ts
+server/plugins/_*
+
 # bun.lock is required by the Dockerfile deps stage for --frozen-lockfile

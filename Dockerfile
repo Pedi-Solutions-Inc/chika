@@ -21,8 +21,12 @@ FROM oven/bun:1-alpine AS optionals
 
 COPY server/ /tmp/server/
 RUN mkdir -p /out/plugins /out/config && \
-    cp -a /tmp/server/plugins/. /out/plugins/ 2>/dev/null; \
-    cp /tmp/server/auth.config.* /out/config/ 2>/dev/null; \
+    find /tmp/server/plugins/ -maxdepth 1 \( -name '*.ts' -o -name '*.js' \) \
+      ! -name '_*' -exec cp {} /out/plugins/ \; 2>/dev/null; \
+    for ext in ts js mjs cjs; do \
+      [ -f "/tmp/server/auth.config.$ext" ] && \
+        cp "/tmp/server/auth.config.$ext" /out/config/; \
+    done; \
     true
 
 # =============================================================================
