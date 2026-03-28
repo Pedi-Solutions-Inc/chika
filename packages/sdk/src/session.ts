@@ -9,12 +9,21 @@ import type {
   MessageAttributes,
 } from '@pedi/chika-types';
 import type { ChatConfig, ChatStatus } from './types';
-import { ChatDisconnectedError, ChannelClosedError } from './errors';
+import { ChatDisconnectedError, ChannelClosedError, HttpError } from './errors';
 import { resolveServerUrl } from './resolve-url';
 import { createSSEConnection, type SSEConnection } from './sse-connection';
+import { withRetry, resolveRetryConfig, type RetryConfig } from './retry';
+import type { NetworkMonitor } from './network-monitor';
 
 const DEFAULT_RECONNECT_DELAY_MS = 3000;
 const MAX_SEEN_IDS = 500;
+
+const MARK_READ_RETRY_CONFIG: RetryConfig = {
+  maxAttempts: 2,
+  baseDelayMs: 500,
+  maxDelayMs: 2000,
+  jitterFactor: 0.3,
+};
 
 export interface SessionCallbacks<D extends ChatDomain = DefaultDomain> {
   onMessage: (message: Message<D>) => void;
@@ -28,9 +37,27 @@ export interface ChatSession<D extends ChatDomain = DefaultDomain> {
   channelId: string;
   initialParticipants: Participant<D>[];
   initialMessages: Message<D>[];
-  sendMessage: (type: D['messageType'], body: string, attributes?: MessageAttributes<D>) => Promise<SendMessageResponse>;
+  networkMonitor: NetworkMonitor | null;
+  sendMessage: (
+    type: D['messageType'],
+    body: string,
+    attributes?: MessageAttributes<D>,
+    idempotencyKey?: string,
+  ) => Promise<SendMessageResponse>;
   markAsRead: (messageId: string) => Promise<void>;
   disconnect: () => void;
+}
+
+function parseRetryAfter(res: Response): number | undefined {
+  const header = res.headers.get('Retry-After');
+  if (!header) return undefined;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
+
+async function throwHttpError(res: Response): Promise<never> {
+  const body = await res.text().catch(() => '');
+  throw new HttpError(res.status, body, parseRetryAfter(res));
 }
 
 export async function createChatSession<D extends ChatDomain = DefaultDomain>(
@@ -38,28 +65,41 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
   channelId: string,
   profile: Participant<D>,
   callbacks: SessionCallbacks<D>,
+  networkMonitor?: NetworkMonitor,
 ): Promise<ChatSession<D>> {
   const serviceUrl = resolveServerUrl(config.manifest, channelId);
   const customHeaders = config.headers ?? {};
   const reconnectDelay = config.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+  const retryConfig = resolveRetryConfig(config.resilience);
+
+  const sessionAbort = new AbortController();
 
   callbacks.onStatusChange('connecting');
 
-  const joinRes = await fetch(`${serviceUrl}/channels/${channelId}/join`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...customHeaders },
-    body: JSON.stringify(profile),
-  });
+  const joinFn = async (): Promise<JoinResponse<D>> => {
+    const joinRes = await fetch(`${serviceUrl}/channels/${channelId}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...customHeaders },
+      body: JSON.stringify(profile),
+      signal: sessionAbort.signal,
+    });
 
-  if (joinRes.status === 410) {
-    throw new ChannelClosedError(channelId);
-  }
+    if (joinRes.status === 410) {
+      throw new ChannelClosedError(channelId);
+    }
 
-  if (!joinRes.ok) {
-    throw new Error(`Join failed: ${joinRes.status} ${await joinRes.text()}`);
-  }
+    if (!joinRes.ok) {
+      await throwHttpError(joinRes);
+    }
 
-  const { messages, participants, joined_at }: JoinResponse<D> = await joinRes.json();
+    return joinRes.json();
+  };
+
+  const joinData = retryConfig
+    ? await withRetry(joinFn, retryConfig, sessionAbort.signal)
+    : await joinFn();
+
+  const { messages, participants, joined_at }: JoinResponse<D> = joinData;
 
   let lastEventId =
     messages.length > 0 ? messages[messages.length - 1]!.id : undefined;
@@ -96,6 +136,7 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
         reconnectDelayMs: reconnectDelay,
         lastEventId,
         customEvents: ['resync'],
+        networkMonitor,
       },
       {
         onOpen: () => {
@@ -123,8 +164,9 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
 
             callbacks.onMessage(message);
           } else if (eventType === 'resync') {
-            sseConn?.close();
-            sseConn = null;
+            // Let onResync → startSession handle full session recreation.
+            // Don't call reconnectImmediate() — startSession disconnects this
+            // session anyway, so the reconnect would be immediately thrown away.
             callbacks.onResync();
           }
         },
@@ -149,8 +191,9 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
     channelId,
     initialParticipants: participants,
     initialMessages: messages,
+    networkMonitor: networkMonitor ?? null,
 
-    sendMessage: async (type, body, attributes) => {
+    sendMessage: async (type, body, attributes, idempotencyKey) => {
       if (disposed) throw new ChatDisconnectedError('disconnected');
 
       const payload: SendMessageRequest<D> = {
@@ -158,42 +201,69 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
         type,
         body,
         attributes,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
       };
 
-      const res = await fetch(
-        `${serviceUrl}/channels/${channelId}/messages`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...customHeaders },
-          body: JSON.stringify(payload),
-        },
-      );
+      const sendFn = async (): Promise<SendMessageResponse> => {
+        const res = await fetch(
+          `${serviceUrl}/channels/${channelId}/messages`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...customHeaders },
+            body: JSON.stringify(payload),
+            signal: sessionAbort.signal,
+          },
+        );
 
-      if (!res.ok) {
-        throw new Error(`Send failed: ${res.status} ${await res.text()}`);
-      }
+        if (!res.ok) {
+          await throwHttpError(res);
+        }
 
-      const response: SendMessageResponse = await res.json();
+        return res.json();
+      };
+
+      const response = retryConfig
+        ? await withRetry(sendFn, retryConfig, sessionAbort.signal)
+        : await sendFn();
+
       seenMessageIds.add(response.id);
       return response;
     },
 
     markAsRead: async (messageId: string) => {
-      const res = await fetch(`${serviceUrl}/channels/${channelId}/read`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...customHeaders },
-        body: JSON.stringify({
-          participant_id: profile.id,
-          message_id: messageId,
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(`markAsRead failed: ${res.status}`);
+      const readFn = async (): Promise<void> => {
+        const res = await fetch(`${serviceUrl}/channels/${channelId}/read`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...customHeaders },
+          body: JSON.stringify({
+            participant_id: profile.id,
+            message_id: messageId,
+          }),
+          signal: sessionAbort.signal,
+        });
+        if (!res.ok) {
+          await throwHttpError(res);
+        }
+      };
+
+      if (retryConfig) {
+        try {
+          await withRetry(readFn, MARK_READ_RETRY_CONFIG, sessionAbort.signal);
+        } catch (err) {
+          // Surface non-retryable errors (403, 404) for dev diagnostics
+          if (err instanceof HttpError) {
+            callbacks.onError(err);
+          }
+          // Swallow RetryExhaustedError — markAsRead is best-effort
+        }
+      } else {
+        await readFn();
       }
     },
 
     disconnect: () => {
       disposed = true;
+      sessionAbort.abort();
       sseConn?.close();
       sseConn = null;
       callbacks.onStatusChange('disconnected');

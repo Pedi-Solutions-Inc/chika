@@ -4,6 +4,7 @@ import type { UnreadCountResponse, SSEUnreadUpdateEvent } from '@pedi/chika-type
 import type { ChatConfig } from './types';
 import { resolveServerUrl } from './resolve-url';
 import { createSSEConnection, type SSEConnection } from './sse-connection';
+import { createNetworkMonitor, type NetworkMonitor } from './network-monitor';
 
 const DEFAULT_BACKGROUND_GRACE_MS = 2000;
 const UNREAD_CUSTOM_EVENTS = ['unread_snapshot', 'unread_update', 'unread_clear'];
@@ -38,6 +39,28 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
   const backgroundGraceMs =
     config.backgroundGraceMs ?? (Platform.OS === 'android' ? DEFAULT_BACKGROUND_GRACE_MS : 0);
 
+  const [monitor, setMonitor] = useState<NetworkMonitor | null>(null);
+  const resilienceEnabled = config.resilience !== false;
+  const injectedMonitor =
+    typeof config.resilience === 'object' ? config.resilience.networkMonitor : undefined;
+
+  useEffect(() => {
+    if (!resilienceEnabled) {
+      setMonitor(null);
+      return;
+    }
+    if (injectedMonitor) {
+      setMonitor(injectedMonitor);
+      return;
+    }
+    const m = createNetworkMonitor();
+    setMonitor(m);
+    return () => {
+      m.dispose();
+      setMonitor(null);
+    };
+  }, [resilienceEnabled, injectedMonitor]);
+
   const connect = useCallback(() => {
     connRef.current?.close();
     connRef.current = null;
@@ -52,6 +75,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
         headers: customHeaders,
         reconnectDelayMs: configRef.current.reconnectDelayMs,
         customEvents: UNREAD_CUSTOM_EVENTS,
+        networkMonitor: monitor ?? undefined,
       },
       {
         onOpen: () => {
@@ -83,7 +107,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
         },
       },
     );
-  }, [channelId, participantId]);
+  }, [channelId, participantId, monitor]);
 
   const disconnect = useCallback(() => {
     connRef.current?.close();
@@ -99,6 +123,9 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
       disconnect();
       return;
     }
+
+    // Wait for monitor before connecting (avoids double-connect on mount)
+    if (resilienceEnabled && !monitor) return;
 
     connect();
 

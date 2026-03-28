@@ -17,6 +17,7 @@ import {
   insertMessage,
   findChannel,
   findMessage,
+  findMessageByIdempotencyKey,
   toMessage,
   toParticipant,
   updateLastRead,
@@ -150,9 +151,31 @@ channels.post(
       reqLog.warn('message blocked by plugin', { channelId, messageId: messageId.toHexString(), reason: intercepted.reason });
       return c.json({ error: intercepted.reason }, 403);
     }
-    const finalDoc: MessageDocument = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
+    const finalDoc: MessageDocument = {
+      ...intercepted.message,
+      _id: messageId,
+      channel_id: channelId,
+      created_at: now,
+      ...(body.idempotency_key ? { idempotency_key: body.idempotency_key } : {}),
+    };
 
-    await insertMessage(finalDoc);
+    // Idempotent insert: catch duplicate key from sparse unique index
+    if (body.idempotency_key) {
+      try {
+        await insertMessage(finalDoc);
+      } catch (err: any) {
+        if (err?.code === 11000) {
+          const existing = await findMessageByIdempotencyKey(channelId, body.idempotency_key);
+          if (existing) {
+            reqLog.info('idempotent duplicate', { channelId, idempotencyKey: body.idempotency_key });
+            return c.json({ id: existing._id.toHexString(), created_at: existing.created_at.toISOString() }, 201);
+          }
+        }
+        throw err;
+      }
+    } else {
+      await insertMessage(finalDoc);
+    }
 
     const message = toMessage(finalDoc);
     await broadcast(channelId, message);

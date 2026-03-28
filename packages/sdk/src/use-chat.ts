@@ -9,14 +9,22 @@ import type {
   SendMessageResponse,
 } from '@pedi/chika-types';
 import type { UseChatOptions, UseChatReturn, ChatStatus } from './types';
-import { ChatDisconnectedError, ChannelClosedError } from './errors';
+import { ChatDisconnectedError, ChannelClosedError, QueueFullError, RetryExhaustedError } from './errors';
+import { isRetryableError, resolveRetryConfig } from './retry';
 import { createChatSession, type ChatSession, type SessionCallbacks } from './session';
+import { createNetworkMonitor, type NetworkMonitor } from './network-monitor';
+import { MessageQueue, type QueuedMessage } from './message-queue';
 
 const DEFAULT_BACKGROUND_GRACE_MS = 2000;
+const DEFAULT_MAX_QUEUE_SIZE = 50;
+
+// Module-scope queue registry, keyed by channelId. Survives component remounts.
+const queueRegistry = new Map<string, { queue: MessageQueue; refCount: number }>();
 
 /**
  * React hook for real-time chat over SSE.
- * Manages connection lifecycle, AppState transitions, message deduplication, and reconnection.
+ * Manages connection lifecycle, AppState transitions, message deduplication, reconnection,
+ * and optional network resilience (retry, offline queue, network monitoring).
  *
  * @template D - Chat domain type for role/message type narrowing. Defaults to DefaultDomain.
  */
@@ -27,6 +35,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   const [participants, setParticipants] = useState<Participant<D>[]>([]);
   const [status, setStatus] = useState<ChatStatus>('connecting');
   const [error, setError] = useState<Error | null>(null);
+  const [pendingMessages, setPendingMessages] = useState<QueuedMessage[]>([]);
 
   const sessionRef = useRef<ChatSession<D> | null>(null);
   const disposedRef = useRef(false);
@@ -44,20 +53,55 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   onMessageRef.current = onMessage;
   const startingRef = useRef(false);
   const pendingOptimisticIds = useRef(new Set<string>());
+  const [monitor, setMonitor] = useState<NetworkMonitor | null>(null);
+  const monitorRef = useRef<NetworkMonitor | null>(null);
+  monitorRef.current = monitor;
+  const queueRef = useRef<MessageQueue | null>(null);
+
+  const resilienceEnabled = config.resilience !== false;
+  const queueEnabled =
+    resilienceEnabled &&
+    (typeof config.resilience === 'object' ? config.resilience.offlineQueue !== false : true);
+  const retryConfig = resolveRetryConfig(config.resilience);
+  const maxQueueSize =
+    (resilienceEnabled && config.resilience && typeof config.resilience === 'object'
+      ? config.resilience.maxQueueSize
+      : undefined) ?? DEFAULT_MAX_QUEUE_SIZE;
 
   const backgroundGraceMs =
     config.backgroundGraceMs ?? (Platform.OS === 'android' ? DEFAULT_BACKGROUND_GRACE_MS : 0);
+
+  // Resolve user-injected monitor (stable reference, no side effect)
+  const injectedMonitor =
+    typeof config.resilience === 'object' ? config.resilience.networkMonitor : undefined;
+
+  // Create monitor in useEffect to avoid side effects during render.
+  // Uses state (not ref) so the queue effect re-runs when monitor is ready.
+  useEffect(() => {
+    if (!resilienceEnabled) {
+      setMonitor(null);
+      return;
+    }
+    if (injectedMonitor) {
+      setMonitor(injectedMonitor);
+      return; // user owns lifecycle
+    }
+    const m = createNetworkMonitor();
+    setMonitor(m);
+    return () => {
+      m.dispose();
+      setMonitor(null);
+    };
+  }, [resilienceEnabled, injectedMonitor]);
 
   const callbacks: SessionCallbacks<D> = {
     onMessage: (message) => {
       if (disposedRef.current) return;
       setMessages((prev: Message<D>[]) => {
-        // Fast path: no pending optimistic messages, just append.
         if (pendingOptimisticIds.current.size === 0) {
           return [...prev, message];
         }
 
-        // Slow path: check if this SSE message reconciles a pending optimistic message.
         const optimisticIdx = prev.findIndex(
           (m) =>
             pendingOptimisticIds.current.has(m.id) &&
@@ -79,7 +123,9 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     onStatusChange: (nextStatus) => {
       if (disposedRef.current) return;
       setStatus(nextStatus);
-      if (nextStatus === 'connected') setError(null);
+      if (nextStatus === 'connected') {
+        setError(null);
+      }
     },
     onError: (err) => {
       if (disposedRef.current) return;
@@ -102,7 +148,13 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     }
 
     try {
-      const session = await createChatSession<D>(configRef.current, channelId, profileRef.current, callbacks);
+      const session = await createChatSession<D>(
+        configRef.current,
+        channelId,
+        profileRef.current,
+        callbacks,
+        monitorRef.current ?? undefined,
+      );
 
       if (disposedRef.current) {
         session.disconnect();
@@ -111,7 +163,17 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
 
       sessionRef.current = session;
       setParticipants(session.initialParticipants);
-      setMessages(session.initialMessages);
+
+      // Re-merge any pending optimistic messages after resync
+      if (pendingOptimisticIds.current.size > 0) {
+        const pendingIds = pendingOptimisticIds.current;
+        setMessages((prev) => {
+          const pendingMsgs = prev.filter((m) => pendingIds.has(m.id));
+          return [...session.initialMessages, ...pendingMsgs];
+        });
+      } else {
+        setMessages(session.initialMessages);
+      }
     } catch (err) {
       if (disposedRef.current) return;
 
@@ -128,8 +190,11 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     }
   }
 
+  // Session lifecycle
   useEffect(() => {
     disposedRef.current = false;
+    // Don't start until monitor is resolved (or resilience is off)
+    if (resilienceEnabled && !monitor) return;
     startSession();
 
     return () => {
@@ -147,8 +212,65 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
       sessionRef.current?.disconnect();
       sessionRef.current = null;
     };
-  }, [channelId]);
+  }, [channelId, monitor]);
 
+  // Module-scope queue lifecycle (ref-counted, survives remounts)
+  useEffect(() => {
+    if (!queueEnabled || !monitor || !retryConfig) return;
+
+    let entry = queueRegistry.get(channelId);
+    if (!entry) {
+      const queue = new MessageQueue({
+        channelId,
+        maxSize: maxQueueSize,
+        retryConfig,
+        networkMonitor: monitor,
+        storage:
+          typeof config.resilience === 'object'
+            ? config.resilience.queueStorage
+            : undefined,
+        onError: (err) => {
+          if (!disposedRef.current) setError(err);
+        },
+        onStatusChange: () => {
+          if (!disposedRef.current) {
+            setPendingMessages(queueRef.current?.getAll() ?? []);
+          }
+        },
+      });
+      entry = { queue, refCount: 0 };
+      queueRegistry.set(channelId, entry);
+    }
+    entry.refCount++;
+    queueRef.current = entry.queue;
+
+    return () => {
+      const e = queueRegistry.get(channelId);
+      if (e) {
+        e.refCount--;
+        if (e.refCount <= 0) {
+          e.queue.dispose();
+          queueRegistry.delete(channelId);
+        }
+      }
+      queueRef.current = null;
+    };
+  }, [channelId, queueEnabled, monitor]);
+
+  // Network monitor: auto-rejoin on connectivity return when in error state
+  useEffect(() => {
+    if (!monitor || !resilienceEnabled) return;
+
+    const unsub = monitor.subscribe((connected: boolean) => {
+      if (connected && statusRef.current === 'error' && !startingRef.current) {
+        startSession();
+      }
+    });
+
+    return unsub;
+  }, [channelId, resilienceEnabled, monitor]);
+
+  // AppState lifecycle
   useEffect(() => {
     function teardownSession(): void {
       sessionRef.current?.disconnect();
@@ -205,16 +327,16 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
       if (!session) throw new ChatDisconnectedError(statusRef.current);
 
       const optimistic = configRef.current.optimisticSend !== false;
-      let optimisticId: string | null = null;
+      // Serves as both the optimistic message ID and the server-side idempotency key
+      const messageKey = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
       if (optimistic) {
-        optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        pendingOptimisticIds.current.add(optimisticId);
+        pendingOptimisticIds.current.add(messageKey);
         const provisionalMsg: Message<D> = {
-          id: optimisticId,
+          id: messageKey,
           channel_id: channelId,
           sender_id: profileRef.current.id,
-          sender_role: profileRef.current.role as D['role'],
+          sender_role: profileRef.current.role,
           type,
           body,
           attributes: (attributes ?? {}) as MessageAttributes<D>,
@@ -223,33 +345,90 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
         setMessages((prev) => [...prev, provisionalMsg]);
       }
 
-      try {
-        const response = await session.sendMessage(type, body, attributes);
+      const doSend = () => {
+        const s = sessionRef.current;
+        if (!s) throw new ChatDisconnectedError(statusRef.current);
+        return s.sendMessage(type, body, attributes, messageKey);
+      };
 
-        if (optimistic && optimisticId) {
-          pendingOptimisticIds.current.delete(optimisticId);
+      const handleSuccess = (response: SendMessageResponse): void => {
+        if (optimistic) {
+          pendingOptimisticIds.current.delete(messageKey);
           setMessages((prev) => {
-            // If SSE already reconciled this message, the optimistic ID is gone.
-            const stillPending = prev.some((m) => m.id === optimisticId);
+            const stillPending = prev.some((m) => m.id === messageKey);
             if (!stillPending) return prev;
             return prev.map((m) =>
-              m.id === optimisticId
+              m.id === messageKey
                 ? { ...m, id: response.id, created_at: response.created_at }
                 : m,
             );
           });
         }
+      };
 
+      const handleError = (_err: unknown): void => {
+        if (optimistic) {
+          pendingOptimisticIds.current.delete(messageKey);
+          setMessages((prev) => prev.filter((m) => m.id !== messageKey));
+        }
+      };
+
+      // Queue path: enqueue and let queue handle retry + offline
+      if (queueRef.current) {
+        try {
+          const response = await queueRef.current.enqueue(doSend, messageKey);
+          handleSuccess(response);
+          return response;
+        } catch (err) {
+          if (err instanceof QueueFullError) {
+            handleError(err);
+            throw err;
+          }
+          if (err instanceof RetryExhaustedError || !isRetryableError(err)) {
+            // For failed messages: if optimistic, mark as failed (keep in UI)
+            // The pendingMessages state shows the status
+            if (optimistic && err instanceof RetryExhaustedError) {
+              // Keep optimistic message visible — queue tracks status as 'failed'.
+              // Keep messageKey in pendingOptimisticIds so SSE reconciliation can
+              // still match if the server eventually received the message.
+              // Removed on explicit cancelMessage() call.
+            } else {
+              handleError(err);
+            }
+            throw err;
+          }
+          handleError(err);
+          throw err;
+        }
+      }
+
+      // Non-queue path: direct send (session.ts handles retry if enabled)
+      try {
+        const response = await doSend();
+        handleSuccess(response);
         return response;
       } catch (err) {
-        if (optimistic && optimisticId) {
-          pendingOptimisticIds.current.delete(optimisticId);
-          setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-        }
+        handleError(err);
         throw err;
       }
     },
     [channelId],
+  );
+
+  const cancelMessage = useCallback(
+    (optimisticId: string) => {
+      queueRef.current?.cancel(optimisticId);
+      pendingOptimisticIds.current.delete(optimisticId);
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+    },
+    [],
+  );
+
+  const retryMessage = useCallback(
+    (optimisticId: string) => {
+      queueRef.current?.retry(optimisticId);
+    },
+    [],
   );
 
   const disconnect = useCallback(() => {
@@ -258,5 +437,15 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     setStatus('disconnected');
   }, []);
 
-  return { messages, participants, status, error, sendMessage, disconnect };
+  return {
+    messages,
+    participants,
+    status,
+    error,
+    sendMessage,
+    disconnect,
+    pendingMessages,
+    cancelMessage,
+    retryMessage,
+  };
 }

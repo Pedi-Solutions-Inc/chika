@@ -1,4 +1,6 @@
 import EventSource from 'react-native-sse';
+import { calculateBackoff, type RetryConfig } from './retry';
+import type { NetworkMonitor } from './network-monitor';
 
 const DEFAULT_RECONNECT_DELAY_MS = 3000;
 
@@ -8,6 +10,7 @@ export interface SSEConnectionConfig {
   reconnectDelayMs?: number;
   lastEventId?: string;
   customEvents?: string[];
+  networkMonitor?: NetworkMonitor;
 }
 
 export interface SSEConnectionCallbacks {
@@ -20,19 +23,30 @@ export interface SSEConnectionCallbacks {
 
 export interface SSEConnection {
   close: () => void;
+  reconnectImmediate: () => void;
 }
 
 export function createSSEConnection(
   config: SSEConnectionConfig,
   callbacks: SSEConnectionCallbacks,
 ): SSEConnection {
-  const reconnectDelay = config.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+  const baseDelay = config.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
   const customEvents = config.customEvents ?? [];
+  const monitor = config.networkMonitor;
+
+  const backoffConfig: RetryConfig = {
+    maxAttempts: Infinity,
+    baseDelayMs: baseDelay,
+    maxDelayMs: 30000,
+    jitterFactor: 0.3,
+  };
 
   let currentLastEventId = config.lastEventId;
   let es: EventSource<string> | null = null;
   let disposed = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let attempt = 0;
+  let waitAbort: AbortController | null = null;
 
   function cleanup(): void {
     if (es) {
@@ -40,17 +54,38 @@ export function createSSEConnection(
       es.close();
       es = null;
     }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (waitAbort) {
+      waitAbort.abort();
+      waitAbort = null;
+    }
   }
 
-  function scheduleReconnect(): void {
-    if (disposed || reconnectTimer) return;
+  async function scheduleReconnect(): Promise<void> {
+    if (disposed || reconnectTimer || waitAbort) return;
     callbacks.onReconnecting?.();
     cleanup();
 
+    // Wait for network if monitor available
+    if (monitor && !monitor.isConnected()) {
+      waitAbort = new AbortController();
+      try {
+        await monitor.waitForOnline(waitAbort.signal);
+      } catch {
+        return; // aborted via dispose
+      }
+      waitAbort = null;
+      if (disposed) return;
+    }
+
+    const delay = calculateBackoff(attempt++, backoffConfig);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
-    }, reconnectDelay);
+    }, delay);
   }
 
   function connect(): void {
@@ -66,6 +101,7 @@ export function createSSEConnection(
 
     es.addEventListener('open', () => {
       if (disposed) return;
+      attempt = 0;
       callbacks.onOpen?.();
     });
 
@@ -112,11 +148,14 @@ export function createSSEConnection(
   return {
     close: () => {
       disposed = true;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
       cleanup();
+    },
+
+    reconnectImmediate: () => {
+      if (disposed) return;
+      cleanup(); // does NOT set disposed
+      attempt = 0;
+      connect();
     },
   };
 }

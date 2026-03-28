@@ -24,6 +24,7 @@ export const sendMessageRequestSchema = z.object({
   type: z.string().min(1),
   body: z.string().min(1).max(10_000),
   attributes: messageAttributesSchema.optional(),
+  idempotency_key: z.string().min(1).max(64).optional(),
 });
 
 export interface SendMessageRequest<D extends ChatDomain = DefaultDomain> {
@@ -31,6 +32,7 @@ export interface SendMessageRequest<D extends ChatDomain = DefaultDomain> {
   type: D['messageType'];
   body: string;
   attributes?: MessageAttributes<D>;
+  idempotency_key?: string;
 }
 
 export interface SendMessageResponse {
