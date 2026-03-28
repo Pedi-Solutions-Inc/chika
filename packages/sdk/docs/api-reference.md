@@ -5,7 +5,9 @@ Complete reference for all exports from `@pedi/chika-sdk`.
 ## Table of Contents
 
 - [useChat\<D\>](#usechatd) — Main React hook
+- [useUnread](#useunread) — Unread notification hook
 - [createChatSession\<D\>](#createchatsessiond) — Imperative API
+- [createSSEConnection](#createsseconnection) — Shared SSE utility
 - [resolveServerUrl](#resolveserverurl) — Bucket routing
 - [createManifest](#createmanifest) — Single-server helper
 - [ChatDisconnectedError](#chatdisconnectederror) — Error class
@@ -131,6 +133,154 @@ function ChatScreen({ bookingId, user, token }) {
 
 ---
 
+## useUnread
+
+```typescript
+function useUnread(options: UseUnreadOptions): UseUnreadReturn
+```
+
+React hook for real-time unread message notifications. Connects to a per-channel SSE stream that delivers unread count updates. Designed for "red dot" indicators and badge counts on non-chat pages.
+
+### Options
+
+```typescript
+interface UseUnreadOptions {
+  config: ChatConfig;
+  channelId: string;
+  participantId: string;
+  enabled?: boolean;
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `config` | `ChatConfig` | Yes | — | Same connection config as `useChat` |
+| `channelId` | `string` | Yes | — | Channel to monitor for unread messages |
+| `participantId` | `string` | Yes | — | Current user's participant ID |
+| `enabled` | `boolean` | No | `true` | Set `false` to pause the SSE connection (e.g., when `useChat` is active for this channel) |
+
+### Return Value
+
+```typescript
+interface UseUnreadReturn {
+  unreadCount: number;
+  hasUnread: boolean;
+  lastMessageAt: string | null;
+  error: Error | null;
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `unreadCount` | `number` | Number of unread messages in the channel |
+| `hasUnread` | `boolean` | Convenience flag — `true` when `unreadCount > 0` |
+| `lastMessageAt` | `string \| null` | ISO 8601 timestamp of the most recent message, or `null` if no messages |
+| `error` | `Error \| null` | Most recent error, or `null` |
+
+### SSE Events
+
+The hook connects to `GET /channels/:channelId/unread?participant_id=xxx` and handles three event types:
+
+| Event | When | Effect |
+|-------|------|--------|
+| `unread_snapshot` | On initial connection | Sets `unreadCount` and `lastMessageAt` from server state |
+| `unread_update` | New message from another participant | Increments `unreadCount`, updates `lastMessageAt` |
+| `unread_clear` | Read cursor updated (via `POST /read` or join) | Sets `unreadCount` to server-provided value |
+
+### Behavior
+
+- **AppState handling:** Disconnects on background, reconnects on foreground (same pattern as `useChat`)
+- **State reset:** When `channelId` or `participantId` changes, state resets to zero before the new connection delivers a fresh snapshot
+- **Auto-mark-read integration:** When the user opens the chat (via `useChat`), the join handler marks messages as read server-side. The next time `useUnread` reconnects, the snapshot reflects count `0`.
+
+### Example
+
+```typescript
+import { useUnread, createManifest } from '@pedi/chika-sdk';
+
+const config = { manifest: createManifest('https://chat.example.com') };
+
+function ChatListItem({ channelId, userId }) {
+  const { hasUnread, unreadCount } = useUnread({
+    config,
+    channelId,
+    participantId: userId,
+  });
+
+  return (
+    <Pressable onPress={() => navigate('Chat', { channelId })}>
+      <Text>{channelId}</Text>
+      {hasUnread && <Badge count={unreadCount} />}
+    </Pressable>
+  );
+}
+```
+
+---
+
+## createSSEConnection
+
+```typescript
+function createSSEConnection(
+  config: SSEConnectionConfig,
+  callbacks: SSEConnectionCallbacks
+): SSEConnection
+```
+
+Low-level SSE connection utility. Handles EventSource lifecycle, automatic reconnection, heartbeat keep-alive, and error/410 detection. Used internally by `createChatSession` and `useUnread`. Available for custom SSE integrations.
+
+### SSEConnectionConfig
+
+```typescript
+interface SSEConnectionConfig {
+  url: string;
+  headers?: Record<string, string>;
+  reconnectDelayMs?: number;
+  lastEventId?: string;
+  customEvents?: string[];
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | `string` | **Required** | SSE endpoint URL |
+| `headers` | `Record<string, string>` | `undefined` | Custom headers (auth, etc.) |
+| `reconnectDelayMs` | `number` | `3000` | Delay before reconnection attempt |
+| `lastEventId` | `string` | `undefined` | Initial `Last-Event-ID` for resumption |
+| `customEvents` | `string[]` | `[]` | Additional SSE event types to listen for (beyond `message`) |
+
+### SSEConnectionCallbacks
+
+```typescript
+interface SSEConnectionCallbacks {
+  onOpen?: () => void;
+  onEvent: (eventType: string, data: string, lastEventId?: string) => void;
+  onError?: (error: Error) => void;
+  onClosed?: () => void;
+  onReconnecting?: () => void;
+}
+```
+
+| Callback | Description |
+|----------|-------------|
+| `onOpen` | SSE connection established |
+| `onEvent` | Any SSE event received — `eventType` is `'message'` or one of `customEvents` |
+| `onError` | Connection error (non-410) |
+| `onClosed` | Channel permanently closed (410 detected) — no reconnection attempted |
+| `onReconnecting` | Reconnection scheduled after error/close |
+
+### SSEConnection
+
+```typescript
+interface SSEConnection {
+  close: () => void;
+}
+```
+
+Call `close()` to terminate the connection and prevent further reconnection attempts.
+
+---
+
 ## createChatSession\<D\>
 
 ```typescript
@@ -175,6 +325,7 @@ interface ChatSession<D extends ChatDomain = DefaultDomain> {
     body: string,
     attributes?: MessageAttributes<D>
   ) => Promise<SendMessageResponse>;
+  markAsRead: (messageId: string) => Promise<void>;
   disconnect: () => void;
 }
 ```
@@ -186,6 +337,7 @@ interface ChatSession<D extends ChatDomain = DefaultDomain> {
 | `initialParticipants` | `Participant<D>[]` | Participants returned by the join endpoint |
 | `initialMessages` | `Message<D>[]` | Recent messages returned by the join endpoint |
 | `sendMessage` | `function` | Send a message to the channel |
+| `markAsRead` | `(messageId: string) => Promise<void>` | Mark messages as read up to the given message ID. Throws on server error. |
 | `disconnect` | `() => void` | Close the SSE connection |
 
 ### Example

@@ -366,15 +366,16 @@ catch (err) {
 // WRONG: messages includes all history, not just unread
 const unreadCount = messages.length;
 
-// CORRECT: Track the last-read position yourself
-const [lastReadIndex, setLastReadIndex] = useState(0);
+// CORRECT: Use the useUnread hook on non-chat pages
+import { useUnread } from '@pedi/chika-sdk';
 
-useEffect(() => {
-  // Mark as read when screen is focused
-  if (isFocused) setLastReadIndex(messages.length);
-}, [isFocused, messages.length]);
-
-const unreadCount = messages.length - lastReadIndex;
+const { unreadCount, hasUnread } = useUnread({
+  config,
+  channelId: `booking_${bookingId}`,
+  participantId: userId,
+});
+// useChat automatically marks messages as read on unmount,
+// so useUnread will show 0 after the user leaves the chat page.
 ```
 
 ### Mistake: Filtering Messages Incorrectly
@@ -443,6 +444,7 @@ These are the imports you'll need most often:
 // Hook and utilities
 import {
   useChat,
+  useUnread,
   createManifest,
   ChatDisconnectedError,
   ChannelClosedError,
@@ -453,6 +455,7 @@ import type {
   ChatConfig,
   ChatStatus,
   UseChatReturn,
+  UseUnreadReturn,
   Message,
   Participant,
   PediChat,
@@ -487,3 +490,5 @@ When building a chat screen, verify all of these:
 - [ ] Event messages (non-`chat` types) render as cards/banners, not bubbles
 - [ ] Input is disabled or shows placeholder when `status !== 'connected'`
 - [ ] FlatList scrolls to bottom on new messages
+- [ ] Unread indicators use `useUnread` hook (not `messages.length`)
+- [ ] `useUnread` is disabled (`enabled: false`) when on the active chat page

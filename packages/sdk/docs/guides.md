@@ -32,7 +32,7 @@ When `useChat` mounts (or `createChatSession` is called), the following sequence
    └── resync   → clear state, fire onResync callback
 ```
 
-On unmount, the SSE connection is closed and a `disposedRef` flag prevents any further state updates.
+On unmount, if the connection is active, `markAsRead` is called with the last message ID (fire-and-forget), then the SSE connection is closed. A `disposedRef` flag prevents any further state updates.
 
 ---
 
@@ -250,6 +250,72 @@ The routing algorithm:
 This ensures a given channel always routes to the same server, which is necessary because SSE connections and in-memory broadcasting are server-local.
 
 For single-server deployments, use `createManifest(url)` which creates a single bucket covering range `[0, 99]`.
+
+---
+
+## Unread Notifications
+
+The `useUnread` hook provides real-time unread message counts via a per-channel SSE stream. It's designed for showing "red dot" indicators or badge counts when the user is not on the chat page.
+
+### Basic Usage
+
+```typescript
+import { useUnread, createManifest } from '@pedi/chika-sdk';
+
+const config = { manifest: createManifest('https://chat.example.com') };
+
+function ChatListItem({ channelId, userId }) {
+  const { hasUnread, unreadCount } = useUnread({
+    config,
+    channelId,
+    participantId: userId,
+  });
+
+  return (
+    <Pressable>
+      <Text>{channelId}</Text>
+      {hasUnread && <View style={styles.redDot} />}
+    </Pressable>
+  );
+}
+```
+
+### How It Works
+
+1. On mount, the hook connects to `GET /channels/:channelId/unread?participant_id=xxx`
+2. The server sends an `unread_snapshot` event with the current unread count
+3. When a new message arrives (from another participant), the server pushes an `unread_update` event — the hook increments the count
+4. When `useChat` marks messages as read (on unmount or via `POST /read`), the server pushes an `unread_clear` event — the hook updates the count
+
+### Integration with useChat
+
+The `useChat` hook auto-marks messages as read when the component unmounts (if connected). This means:
+
+1. User is on a list page → `useUnread` shows badge count
+2. User opens chat → `useChat` connects, joins channel (auto-marks-read on join)
+3. User leaves chat → `useChat` unmounts, calls `markAsRead` with the last message ID
+4. User is back on list page → `useUnread` reconnects, gets snapshot with count `0`
+
+Use the `enabled` prop to pause `useUnread` when the chat is open:
+
+```typescript
+const [onChatPage, setOnChatPage] = useState(false);
+
+// On list page
+const { hasUnread } = useUnread({
+  config,
+  channelId,
+  participantId: userId,
+  enabled: !onChatPage,
+});
+```
+
+### AppState Behavior
+
+`useUnread` follows the same AppState patterns as `useChat`:
+- **iOS:** Disconnects on `inactive`/`background`, reconnects on `active`
+- **Android:** Grace period before disconnect on `background`
+- On reconnection, a fresh `unread_snapshot` is delivered
 
 ---
 

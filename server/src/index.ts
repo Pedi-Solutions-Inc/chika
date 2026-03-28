@@ -54,6 +54,8 @@ const streamRateLimit = rateLimiter({
 app.use('/channels/:channelId/messages', channelRateLimit);
 app.use('/channels/:channelId/stream', streamRateLimit);
 app.use('/channels/:channelId/join', channelRateLimit);
+app.use('/channels/:channelId/unread', streamRateLimit);
+app.use('/channels/:channelId/read', channelRateLimit);
 
 // Auth middleware — active only when auth.config.ts exists.
 app.use('/channels/:channelId/*', requireAuth);

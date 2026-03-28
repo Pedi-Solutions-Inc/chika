@@ -29,6 +29,15 @@ export type {
   PediMessageAttributes,
 } from './domains';
 
+export type {
+  UnreadCountResponse,
+  MarkReadRequest,
+  SSEUnreadSnapshotEvent,
+  SSEUnreadUpdateEvent,
+  SSEUnreadClearEvent,
+  SSEUnreadEvent,
+} from './unread';
+
 export { participantSchema } from './participant';
 export { joinRequestSchema } from './channel';
 export {
@@ -37,3 +46,4 @@ export {
   systemMessageRequestSchema,
   messageHistoryQuerySchema,
 } from './message';
+export { markReadRequestSchema } from './unread';

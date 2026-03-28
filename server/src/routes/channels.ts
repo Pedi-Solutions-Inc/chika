@@ -5,6 +5,7 @@ import { ulid } from 'ulid';
 import {
   joinRequestSchema,
   sendMessageRequestSchema,
+  markReadRequestSchema,
 } from '@pedi/chika-types';
 import {
   findOrCreateChannel,
@@ -14,10 +15,19 @@ import {
   getMessagesSinceTime,
   insertMessage,
   findChannel,
+  findMessage,
   toMessage,
+  updateLastRead,
+  getUnreadCount,
   type MessageDocument,
 } from '../db';
 import { subscribe, unsubscribe, broadcast } from '../broadcaster';
+import {
+  subscribeUnread,
+  unsubscribeUnread,
+  broadcastToParticipant,
+  broadcastToChannel,
+} from '../unread-broadcaster';
 
 const channels = new Hono();
 
@@ -43,6 +53,11 @@ channels.post(
     const updatedChannel = (await findChannel(channelId))!;
     const messageDocs = await getChannelMessages(channelId);
     const msgs = messageDocs.map(toMessage);
+
+    if (messageDocs.length > 0) {
+      const lastMsgId = messageDocs[messageDocs.length - 1]!._id;
+      await updateLastRead(channelId, participant.id, lastMsgId);
+    }
 
     return c.json({
       channel_id: channelId,
@@ -96,6 +111,12 @@ channels.post(
 
     const message = toMessage(doc);
     await broadcast(channelId, message);
+
+    await broadcastToChannel(channelId, body.sender_id, 'unread_update', {
+      channel_id: channelId,
+      message_id: messageId,
+      created_at: now,
+    });
 
     return c.json({ id: messageId, created_at: now }, 201);
   },
@@ -161,5 +182,95 @@ channels.get('/:channelId/stream', async (c) => {
     }
   });
 });
+
+channels.get('/:channelId/unread', async (c) => {
+  const channelId = c.req.param('channelId');
+  const participantId = c.req.query('participant_id');
+
+  if (!participantId) {
+    return c.json({ error: 'participant_id query parameter is required' }, 400);
+  }
+
+  const channel = await findChannel(channelId);
+  if (!channel) {
+    return c.json({ error: 'Channel not found' }, 404);
+  }
+  if (channel.status === 'closed') {
+    return c.json({ error: 'Channel is closed' }, 410);
+  }
+
+  const participant = channel.participants.find((p) => p.id === participantId);
+  if (!participant) {
+    return c.json({ error: 'Participant not found in channel' }, 403);
+  }
+
+  return streamSSE(c, async (stream) => {
+    const conn = subscribeUnread(channelId, participantId, stream);
+
+    stream.onAbort(() => {
+      unsubscribeUnread(channelId, participantId, conn);
+    });
+
+    const { unread_count, last_message_at } = await getUnreadCount(channelId, participantId);
+    await stream.writeSSE({
+      event: 'unread_snapshot',
+      data: JSON.stringify({
+        channel_id: channelId,
+        unread_count,
+        last_message_at,
+      }),
+    });
+
+    while (true) {
+      try {
+        await stream.writeSSE({
+          event: 'heartbeat',
+          data: '',
+        });
+        await stream.sleep(30_000);
+      } catch {
+        break;
+      }
+    }
+  });
+});
+
+channels.post(
+  '/:channelId/read',
+  zValidator('json', markReadRequestSchema, (result, c) => {
+    if (!result.success) {
+      return c.json({ error: 'Invalid request', details: result.error.flatten() }, 400);
+    }
+  }),
+  async (c) => {
+    const channelId = c.req.param('channelId');
+    const { participant_id, message_id } = c.req.valid('json');
+
+    const channel = await findChannel(channelId);
+    if (!channel) {
+      return c.json({ error: 'Channel not found' }, 404);
+    }
+
+    const participant = channel.participants.find((p) => p.id === participant_id);
+    if (!participant) {
+      return c.json({ error: 'Participant not found in channel' }, 403);
+    }
+
+    const msg = await findMessage(message_id, channelId);
+    if (!msg) {
+      return c.json({ error: 'Message not found in channel' }, 404);
+    }
+
+    await updateLastRead(channelId, participant_id, message_id);
+
+    const { unread_count } = await getUnreadCount(channelId, participant_id);
+    await broadcastToParticipant(channelId, participant_id, 'unread_clear', {
+      channel_id: channelId,
+      unread_count,
+    });
+
+    return c.json({ success: true });
+  },
+);
 
 export { channels };

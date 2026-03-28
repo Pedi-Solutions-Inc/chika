@@ -203,6 +203,106 @@ data:
 
 ---
 
+### GET /channels/:channelId/unread
+
+Opens an SSE stream for real-time unread message notifications. Used to power "red dot" or badge count indicators on non-chat pages.
+
+**Query Parameters:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `participant_id` | string | Yes | The participant to track unread messages for |
+
+**Behavior:**
+
+1. On connect, the server sends an `unread_snapshot` event with the current unread count
+2. When a new message is sent to the channel by another participant, an `unread_update` event is delivered
+3. When the participant's read cursor is updated (via `POST /read`), an `unread_clear` event is delivered
+4. Heartbeats are sent every 30 seconds
+
+**SSE Event Types:**
+
+#### `unread_snapshot`
+
+Sent on initial connection with the current unread state.
+
+```
+event: unread_snapshot
+data: {"channel_id":"booking_456","unread_count":3,"last_message_at":"2026-03-28T10:05:00.000Z"}
+```
+
+#### `unread_update`
+
+Sent when a new message arrives from another participant. Minimal payload — no message body.
+
+```
+event: unread_update
+data: {"channel_id":"booking_456","message_id":"msg_01JQXYZ...","created_at":"2026-03-28T10:06:00.000Z"}
+```
+
+#### `unread_clear`
+
+Sent when the read cursor is updated (e.g., after `POST /read` or joining the channel).
+
+```
+event: unread_clear
+data: {"channel_id":"booking_456","unread_count":0}
+```
+
+#### `heartbeat`
+
+Sent every 30 seconds. Same as the chat stream heartbeat.
+
+**Error Responses:**
+
+| Status | Body | Condition |
+|--------|------|-----------|
+| 400 | `{ "error": "participant_id query parameter is required" }` | Missing query parameter |
+| 403 | `{ "error": "Participant not found in channel" }` | Participant has not joined the channel |
+| 404 | `{ "error": "Channel not found" }` | Channel does not exist |
+| 410 | `{ "error": "Channel is closed" }` | Channel has been permanently closed |
+
+---
+
+### POST /channels/:channelId/read
+
+Mark messages as read for a participant. Advances the read cursor to the specified message ID. The cursor can only move forward — attempts to set it to an older message are ignored.
+
+**Request Body:**
+
+```json
+{
+  "participant_id": "user_123",
+  "message_id": "msg_01JQXYZ123ABC456DEF789"
+}
+```
+
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `participant_id` | string | Yes | Min 1 character. Must match an existing participant. |
+| `message_id` | string | Yes | Min 1 character. Must exist in the channel's messages. |
+
+**Success Response (200):**
+
+```json
+{
+  "success": true
+}
+```
+
+After a successful mark-read, an `unread_clear` event is broadcast to the participant's unread SSE stream (if connected) with the updated count.
+
+**Error Responses:**
+
+| Status | Body | Condition |
+|--------|------|-----------|
+| 400 | `{ "error": "Invalid request", "details": {...} }` | Invalid request body |
+| 403 | `{ "error": "Participant not found in channel" }` | Participant has not joined the channel |
+| 404 | `{ "error": "Channel not found" }` | Channel does not exist |
+| 404 | `{ "error": "Message not found in channel" }` | Message ID does not exist in this channel |
+
+---
+
 ## Internal Endpoints
 
 All internal endpoints require the `X-Api-Key` header. The key is validated using `crypto.timingSafeEqual` to prevent timing attacks.
@@ -364,6 +464,8 @@ IP-based rate limiting is applied to all client endpoints. The client IP is extr
 | `POST /channels/:channelId/join` | 120 requests | 60 seconds |
 | `POST /channels/:channelId/messages` | 120 requests | 60 seconds |
 | `GET /channels/:channelId/stream` | 30 requests | 60 seconds |
+| `GET /channels/:channelId/unread` | 30 requests | 60 seconds |
+| `POST /channels/:channelId/read` | 120 requests | 60 seconds |
 
 When the limit is exceeded, the server returns `429 Too Many Requests`.
 

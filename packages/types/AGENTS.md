@@ -44,6 +44,7 @@ All generics default to `DefaultDomain` (fully open `string` / `Record<string, u
 | `src/message.ts` | `Message<D>`, `MessageAttributes<D>`, `SendMessageRequest<D>`, request/response types, Zod schemas |
 | `src/channel.ts` | `JoinRequest`, `JoinResponse<D>`, `joinRequestSchema` |
 | `src/sse.ts` | `SSEMessageEvent<D>`, `SSEEvent<D>` |
+| `src/unread.ts` | `UnreadCountResponse`, `MarkReadRequest`, `SSEUnreadSnapshotEvent`, `SSEUnreadUpdateEvent`, `SSEUnreadClearEvent`, `SSEUnreadEvent`, `markReadRequestSchema` |
 | `src/manifest.ts` | `ChatManifest`, `ChatBucket` for bucket routing |
 
 ## Conventions

@@ -30,11 +30,13 @@ Without a generic, everything defaults to `DefaultDomain` (fully open strings/re
 
 | File | Contents |
 |------|----------|
-| `src/index.ts` | Barrel re-exports: `useChat`, `createChatSession`, `resolveServerUrl`, all consumer-facing types |
+| `src/index.ts` | Barrel re-exports: `useChat`, `useUnread`, `createChatSession`, `createSSEConnection`, `resolveServerUrl`, all consumer-facing types |
 | `src/types.ts` | `ChatConfig`, `ChatStatus`, `UseChatOptions<D>`, `UseChatReturn<D>` |
 | `src/resolve-url.ts` | `resolveServerUrl()` — manifest bucket hashing by channel ID |
-| `src/session.ts` | `createChatSession<D>()` — imperative callback-based session with managed reconnection |
-| `src/use-chat.ts` | `useChat<D>()` — React hook wrapping session lifecycle, AppState, state management |
+| `src/sse-connection.ts` | `createSSEConnection()` — shared SSE primitive handling EventSource lifecycle, reconnection, heartbeat, error/410 detection. Accepts `customEvents` array for extensibility. |
+| `src/session.ts` | `createChatSession<D>()` — imperative callback-based session using `createSSEConnection`. Includes `markAsRead()` for read receipts. |
+| `src/use-chat.ts` | `useChat<D>()` — React hook wrapping session lifecycle, AppState, state management. Auto-marks-read on unmount when connected. |
+| `src/use-unread.ts` | `useUnread()` — per-channel SSE-backed unread notification hook. Returns `{ unreadCount, hasUnread, lastMessageAt, error }`. Supports `enabled` toggle and AppState handling. |
 
 ## Primary API: `useChat<D>` Hook
 
@@ -54,16 +56,29 @@ Returns:
 - `sendMessage(body, attributes?)` — sends a chat message, `attributes` typed as `D['attributes']`
 - `disconnect()` — tears down session and SSE
 
+## Unread API: `useUnread` Hook
+
+```typescript
+const { unreadCount, hasUnread, lastMessageAt, error } = useUnread({
+  config,          // ChatConfig with manifest
+  channelId,       // channel to monitor
+  participantId,   // current user's ID
+  enabled,         // optional, default true — set false when useChat is active
+});
+```
+
+Connects to `GET /channels/:channelId/unread?participant_id=xxx` SSE stream. Receives `unread_snapshot` on connect, `unread_update` on new messages, `unread_clear` on mark-read. Resets state when `channelId`/`participantId` changes.
+
 ## Secondary API: `createChatSession<D>`
 
-Lower-level imperative API with callbacks (`onMessage`, `onStatusChange`, `onError`). Used by `useChat` internally. Available for non-React or custom integrations.
+Lower-level imperative API with callbacks (`onMessage`, `onStatusChange`, `onError`). Used by `useChat` internally. Available for non-React or custom integrations. Includes `markAsRead(messageId)` for read receipts.
 
 ## Key Behaviors
 
 ### Reconnection
 - `pollingInterval: 0` disables react-native-sse's built-in reconnection
-- SDK manages reconnection manually with 3s delay via `scheduleReconnect()`
-- `Last-Event-ID` tracked from each received event's `lastEventId` field and sent on reconnect
+- `createSSEConnection` manages reconnection with configurable delay (default 3s)
+- `Last-Event-ID` tracked locally (not mutating config) from each received event and sent on reconnect
 - Full session recreation on AppState foreground return (authoritative server state)
 
 ### Deduplication
