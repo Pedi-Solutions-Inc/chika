@@ -52,7 +52,12 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     onMessage: (message) => {
       if (disposedRef.current) return;
       setMessages((prev: Message<D>[]) => {
-        // Check if this SSE message reconciles a pending optimistic message.
+        // Fast path: no pending optimistic messages, just append.
+        if (pendingOptimisticIds.current.size === 0) {
+          return [...prev, message];
+        }
+
+        // Slow path: check if this SSE message reconciles a pending optimistic message.
         const optimisticIdx = prev.findIndex(
           (m) =>
             pendingOptimisticIds.current.has(m.id) &&

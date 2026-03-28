@@ -62,8 +62,14 @@ function getCached(key: string): CacheEntry | null {
   return entry;
 }
 
+const MAX_CACHE_SIZE = 10_000;
+
 function setCache(key: string, valid: boolean, ttl: number, userId?: string) {
   if (ttl <= 0) return;
+  if (cache.size >= MAX_CACHE_SIZE && !cache.has(key)) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
   cache.set(key, { valid, userId, expiresAt: Date.now() + ttl });
 }
 

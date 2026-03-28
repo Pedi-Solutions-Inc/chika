@@ -6,7 +6,7 @@
     },
     "packages/sdk": {
       "name": "@pedi/chika-sdk",
-      "version": "1.0.0",
+      "version": "1.0.4",
       "dependencies": {
         "@pedi/chika-types": "workspace:*",
         "react-native-sse": "^1.2.1",
@@ -23,7 +23,7 @@
     },
     "packages/types": {
       "name": "@pedi/chika-types",
-      "version": "1.0.0",
+      "version": "1.0.4",
       "dependencies": {
         "zod": "^3.24.0",
       },
@@ -34,7 +34,7 @@
     },
     "server": {
       "name": "chika-server",
-      "version": "1.0.0",
+      "version": "1.0.2",
       "dependencies": {
         "@hono/zod-validator": "^0.5.0",
         "@pedi/chika-types": "workspace:*",
@@ -42,7 +42,6 @@
         "hono": "^4.12.9",
         "hono-rate-limiter": "^0.5.3",
         "mongodb": "^6.12.0",
-        "ulid": "^2.3.0",
         "zod": "^3.24.0",
       },
       "devDependencies": {
@@ -904,8 +903,6 @@
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "ufo": ["ufo@1.6.3", "", {}, "sha512-yDJTmhydvl5lJzBmy/hyOAA0d+aqCBuwl818haVdYCRrWV84o7YyeVm4QlVHStqNrrJSTb6jKuFAVqAFsr+K3Q=="],
-
-    "ulid": ["ulid@2.4.0", "", { "bin": { "ulid": "bin/cli.js" } }, "sha512-fIRiVTJNcSRmXKPZtGzFQv9WRrZ3M9eoptl/teFJvjOzmpU+/K/JH6HZ8deBfb5vMEpicJcLn7JmvdknlMq7Zg=="],
 
     "undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
 
