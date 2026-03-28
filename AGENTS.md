@@ -55,6 +55,15 @@ const { messages } = useChat<RideHailingChat>({ ... });
 
 All generics default to `DefaultDomain` (fully open) for backward compatibility. The server uses loose runtime types — generics are compile-time only.
 
+## Versioning & Compatibility
+
+- `@pedi/chika-types` and `@pedi/chika-sdk` are always released together at the same version (lockstep).
+- The server (`chika-server`) is versioned independently.
+- **When modifying the server**, always check if the change affects wire-format compatibility (SSE event shapes, request/response schemas, endpoint behavior). If it does, update `COMPATIBILITY.md` to reflect which SDK/Types versions are compatible with the new server version.
+- **When modifying `@pedi/chika-types`**, if you add/remove/rename exports, change Zod schemas, or alter type signatures, this is a breaking change — coordinate with both the SDK and server to ensure compatibility.
+- See [COMPATIBILITY.md](./COMPATIBILITY.md) for the version compatibility matrix (auto-updated by release workflows).
+- See [PUBLISHING.md](./PUBLISHING.md) for the full release process.
+
 ## Key Conventions
 
 - Channel IDs are opaque strings — no enforced format. The service is general-purpose.

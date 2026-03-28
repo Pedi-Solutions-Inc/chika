@@ -57,7 +57,15 @@ jobs:
           echo "Bumping server $CURRENT → $NEW"
 
       - name: Bump server version
-        run: cd server && npm version "${{ steps.version.outputs.new }}" --no-git-tag-version
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          node -e "
+            const fs = require('fs');
+            const f = 'server/package.json';
+            const j = JSON.parse(fs.readFileSync(f));
+            j.version = '$VERSION';
+            fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+          "
 
       - name: Update compatibility board
         run: |
