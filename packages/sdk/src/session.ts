@@ -1,4 +1,3 @@
-import EventSource from 'react-native-sse';
 import type {
   ChatDomain,
   DefaultDomain,
@@ -12,10 +11,7 @@ import type {
 import type { ChatConfig, ChatStatus } from './types';
 import { ChatDisconnectedError, ChannelClosedError } from './errors';
 import { resolveServerUrl } from './resolve-url';
-
-// Custom SSE event types beyond built-in message/open/error/close.
-// 'heartbeat' is server keep-alive (no handler needed).
-type ChatEvents = 'heartbeat' | 'resync';
+import { createSSEConnection, type SSEConnection } from './sse-connection';
 
 const DEFAULT_RECONNECT_DELAY_MS = 3000;
 const MAX_SEEN_IDS = 500;
@@ -33,15 +29,10 @@ export interface ChatSession<D extends ChatDomain = DefaultDomain> {
   initialParticipants: Participant<D>[];
   initialMessages: Message<D>[];
   sendMessage: (type: D['messageType'], body: string, attributes?: MessageAttributes<D>) => Promise<SendMessageResponse>;
+  markAsRead: (messageId: string) => Promise<void>;
   disconnect: () => void;
 }
 
-/**
- * Creates an imperative chat session with SSE streaming and managed reconnection.
- * Lower-level API — prefer `useChat` hook for React Native components.
- *
- * @template D - Chat domain type. Defaults to DefaultDomain.
- */
 export async function createChatSession<D extends ChatDomain = DefaultDomain>(
   config: ChatConfig,
   channelId: string,
@@ -77,9 +68,8 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
 
   const seenMessageIds = new Set<string>(messages.map((m) => m.id));
 
-  let es: EventSource<ChatEvents> | null = null;
+  let sseConn: SSEConnection | null = null;
   let disposed = false;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   function trimSeenIds(): void {
     if (seenMessageIds.size <= MAX_SEEN_IDS) return;
@@ -97,88 +87,57 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
       ? `${serviceUrl}/channels/${channelId}/stream`
       : `${serviceUrl}/channels/${channelId}/stream?since_time=${encodeURIComponent(joinedAt)}`;
 
-    es = new EventSource<ChatEvents>(streamUrl, {
-      headers: {
-        ...customHeaders,
-        ...(lastEventId && { 'Last-Event-ID': lastEventId }),
+    sseConn = createSSEConnection(
+      {
+        url: streamUrl,
+        headers: customHeaders,
+        reconnectDelayMs: reconnectDelay,
+        lastEventId,
+        customEvents: ['resync'],
       },
-      pollingInterval: 0,
-    });
+      {
+        onOpen: () => {
+          if (!disposed) callbacks.onStatusChange('connected');
+        },
+        onEvent: (eventType, data, eventId) => {
+          if (disposed) return;
 
-    es.addEventListener('open', () => {
-      if (disposed) return;
-      callbacks.onStatusChange('connected');
-    });
+          if (eventType === 'message') {
+            let message: Message<D>;
+            try {
+              message = JSON.parse(data);
+            } catch {
+              callbacks.onError(new Error('Failed to parse SSE message'));
+              return;
+            }
 
-    es.addEventListener('message', (event) => {
-      if (disposed || !event.data) return;
+            if (eventId) {
+              lastEventId = eventId;
+            }
 
-      let message: Message<D>;
-      try {
-        message = JSON.parse(event.data);
-      } catch {
-        callbacks.onError(new Error('Failed to parse SSE message'));
-        return;
-      }
+            if (seenMessageIds.has(message.id)) return;
+            seenMessageIds.add(message.id);
+            trimSeenIds();
 
-      if (event.lastEventId) {
-        lastEventId = event.lastEventId;
-      }
-
-      if (seenMessageIds.has(message.id)) return;
-      seenMessageIds.add(message.id);
-      trimSeenIds();
-
-      callbacks.onMessage(message);
-    });
-
-    es.addEventListener('resync', () => {
-      if (disposed) return;
-      cleanupEventSource();
-      callbacks.onResync();
-    });
-
-    es.addEventListener('error', (event) => {
-      if (disposed) return;
-
-      const msg = 'message' in event ? String(event.message) : '';
-
-      if (msg.includes('Channel is closed') || msg.includes('410')) {
-        callbacks.onStatusChange('closed');
-        cleanupEventSource();
-        disposed = true;
-        return;
-      }
-
-      if (msg) callbacks.onError(new Error(msg));
-
-      scheduleReconnect();
-    });
-
-    es.addEventListener('close', () => {
-      if (disposed) return;
-      scheduleReconnect();
-    });
-  }
-
-  function scheduleReconnect(): void {
-    if (disposed || reconnectTimer) return;
-    callbacks.onStatusChange('reconnecting');
-
-    cleanupEventSource();
-
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connect();
-    }, reconnectDelay);
-  }
-
-  function cleanupEventSource(): void {
-    if (es) {
-      es.removeAllEventListeners();
-      es.close();
-      es = null;
-    }
+            callbacks.onMessage(message);
+          } else if (eventType === 'resync') {
+            sseConn?.close();
+            sseConn = null;
+            callbacks.onResync();
+          }
+        },
+        onError: (err) => {
+          if (!disposed) callbacks.onError(err);
+        },
+        onClosed: () => {
+          callbacks.onStatusChange('closed');
+          disposed = true;
+        },
+        onReconnecting: () => {
+          if (!disposed) callbacks.onStatusChange('reconnecting');
+        },
+      },
+    );
   }
 
   connect();
@@ -217,13 +176,24 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
       return response;
     },
 
+    markAsRead: async (messageId: string) => {
+      const res = await fetch(`${serviceUrl}/channels/${channelId}/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...customHeaders },
+        body: JSON.stringify({
+          participant_id: profile.id,
+          message_id: messageId,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`markAsRead failed: ${res.status}`);
+      }
+    },
+
     disconnect: () => {
       disposed = true;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      cleanupEventSource();
+      sseConn?.close();
+      sseConn = null;
       callbacks.onStatusChange('disconnected');
     },
   };

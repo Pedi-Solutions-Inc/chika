@@ -23,6 +23,13 @@ Complete reference for all types, interfaces, and Zod schemas exported by `@pedi
   - [SSEMessageEvent\<D\>](#ssemessageeventd)
   - [SSEResyncEvent](#sseressyncevent)
   - [SSEEvent\<D\>](#sseeventd)
+- [Unread Types](#unread-types)
+  - [UnreadCountResponse](#unreadcountresponse)
+  - [MarkReadRequest](#markreadrequest)
+  - [SSEUnreadSnapshotEvent](#sseunreadsnapshotevent)
+  - [SSEUnreadUpdateEvent](#sseunreadupdateevent)
+  - [SSEUnreadClearEvent](#sseunreadclearevent)
+  - [SSEUnreadEvent](#sseunreadevent)
 - [Manifest Types](#manifest-types)
   - [ChatBucket](#chatbucket)
   - [ChatManifest](#chatmanifest)
@@ -320,6 +327,92 @@ type SSEEvent<D extends ChatDomain = DefaultDomain> = SSEMessageEvent<D> | SSERe
 
 ---
 
+## Unread Types
+
+### UnreadCountResponse
+
+Server response for unread count queries and SSE snapshots.
+
+```typescript
+interface UnreadCountResponse {
+  channel_id: string;
+  unread_count: number;
+  last_message_at: string | null;
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channel_id` | `string` | Channel ID |
+| `unread_count` | `number` | Number of unread messages |
+| `last_message_at` | `string \| null` | ISO 8601 timestamp of the most recent message, or `null` |
+
+### MarkReadRequest
+
+Request body for the mark-read endpoint.
+
+```typescript
+interface MarkReadRequest {
+  participant_id: string;
+  message_id: string;
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `participant_id` | `string` | Participant marking messages as read |
+| `message_id` | `string` | Message ID to mark as read up to (cursor advances forward only) |
+
+### SSEUnreadSnapshotEvent
+
+Sent on initial SSE connection with current unread state.
+
+```typescript
+interface SSEUnreadSnapshotEvent {
+  event: 'unread_snapshot';
+  data: UnreadCountResponse;
+}
+```
+
+### SSEUnreadUpdateEvent
+
+Sent when a new message arrives from another participant. Minimal payload — no message body.
+
+```typescript
+interface SSEUnreadUpdateEvent {
+  event: 'unread_update';
+  data: {
+    channel_id: string;
+    message_id: string;
+    created_at: string;
+  };
+}
+```
+
+### SSEUnreadClearEvent
+
+Sent when the read cursor is updated.
+
+```typescript
+interface SSEUnreadClearEvent {
+  event: 'unread_clear';
+  data: {
+    channel_id: string;
+    unread_count: number;
+  };
+}
+```
+
+### SSEUnreadEvent
+
+Union of all unread SSE event types.
+
+```typescript
+type SSEUnreadEvent = SSEUnreadSnapshotEvent | SSEUnreadUpdateEvent | SSEUnreadClearEvent;
+```
+
+---
+
 ## Manifest Types
 
 ### ChatBucket
@@ -493,3 +586,14 @@ z.object({
 ```
 
 Note: `limit` uses `z.coerce.number()` because query parameters arrive as strings.
+
+### markReadRequestSchema
+
+```typescript
+z.object({
+  participant_id: z.string().min(1),
+  message_id: z.string().min(1),
+})
+```
+
+Validates the request body for the `POST /channels/:channelId/read` endpoint.

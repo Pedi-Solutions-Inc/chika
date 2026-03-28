@@ -14,6 +14,7 @@ import {
   type MessageDocument,
 } from '../db';
 import { broadcast, disconnectChannel } from '../broadcaster';
+import { broadcastToChannel } from '../unread-broadcaster';
 import { requireApiKey } from '../middleware/api-key';
 
 const internal = new Hono();
@@ -57,6 +58,12 @@ internal.post(
 
     const message = toMessage(doc);
     await broadcast(channelId, message);
+
+    await broadcastToChannel(channelId, null, 'unread_update', {
+      channel_id: channelId,
+      message_id: messageId,
+      created_at: now,
+    });
 
     return c.json({ id: messageId, created_at: now }, 201);
   },

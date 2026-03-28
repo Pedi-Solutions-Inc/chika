@@ -75,6 +75,8 @@ All generics default to `DefaultDomain` (fully open) for backward compatibility.
 | POST | `/channels/:channelId/join` | Optional¹ | Register participant + fetch history |
 | POST | `/channels/:channelId/messages` | Optional¹ | Send chat message |
 | GET | `/channels/:channelId/stream` | Optional¹ | SSE live stream (rejects closed channels) |
+| GET | `/channels/:channelId/unread` | Optional¹ | SSE unread notification stream (per participant) |
+| POST | `/channels/:channelId/read` | Optional¹ | Mark messages as read (advances read cursor) |
 | POST | `/internal/channels/:channelId/messages` | API Key | Send system message |
 | GET | `/internal/channels/:channelId/messages` | API Key | Fetch message history (paginated) |
 | POST | `/internal/channels/:channelId/close` | API Key | Close channel + disconnect all SSE |
@@ -107,7 +109,7 @@ cd server && bunx tsc --noEmit              # Check server (has own tsconfig)
 
 ## MongoDB Collections
 
-- `channels` — Indexed on `{ status: 1 }`
+- `channels` — Indexed on `{ status: 1 }` and `{ 'participants.id': 1, status: 1 }`
 - `messages` — Indexed on `{ channel_id: 1, created_at: 1 }` and `{ created_at: 1 }`
 
 ## SSE Behavior
@@ -120,9 +122,13 @@ cd server && bunx tsc --noEmit              # Check server (has own tsconfig)
 
 ## SDK Architecture
 
-The SDK provides two APIs:
-- `useChat` hook (primary) — manages session lifecycle, AppState, reconnection, message accumulation, deduplication
+The SDK provides three APIs:
+- `useChat` hook (primary) — manages session lifecycle, AppState, reconnection, message accumulation, deduplication. Auto-marks messages as read on unmount.
+- `useUnread` hook — per-channel SSE-backed unread notification stream. Returns `{ unreadCount, hasUnread, lastMessageAt, error }`. Supports `enabled` toggle to pause when chat is active.
 - `createChatSession` (lower-level) — imperative callback-based API for non-React or custom integrations
+
+### Shared SSE Utility
+- `createSSEConnection` — extracted SSE connection primitive used by both `session.ts` and `useUnread`. Handles EventSource lifecycle, reconnection, heartbeat, error/410 detection. Accepts `customEvents` array for extensibility.
 
 ### AppState Handling (React Native)
 - **iOS:** Tears down SSE on `inactive`/`background`, reconnects on `active`

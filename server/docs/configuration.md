@@ -96,6 +96,7 @@ The server connects to MongoDB on startup and automatically creates the followin
 
 **Channels collection:**
 - `{ status: 1 }` — For querying active/closed channels
+- `{ 'participants.id': 1, status: 1 }` — For looking up channels by participant
 
 **Messages collection:**
 - `{ channel_id: 1, created_at: 1 }` — For fetching messages by channel with time ordering

@@ -5,13 +5,15 @@
 ```
 Client (SDK)
     │
-    ├── POST /channels/:id/join       → MongoDB upsert
-    ├── POST /channels/:id/messages   → MongoDB insert + SSE broadcast
-    └── GET  /channels/:id/stream     → SSE connection (in-memory)
+    ├── POST /channels/:id/join       → MongoDB upsert + auto-mark-read
+    ├── POST /channels/:id/messages   → MongoDB insert + SSE broadcast + unread notify
+    ├── GET  /channels/:id/stream     → SSE connection (in-memory)
+    ├── GET  /channels/:id/unread     → SSE unread notification stream (per participant)
+    └── POST /channels/:id/read       → Mark messages as read (advance cursor)
                                            │
 Backend Services                           │
     │                                      │
-    ├── POST /internal/.../messages   → MongoDB insert + SSE broadcast
+    ├── POST /internal/.../messages   → MongoDB insert + SSE broadcast + unread notify
     ├── GET  /internal/.../messages   → MongoDB query
     └── POST /internal/.../close      → MongoDB update + disconnect streams
 ```
@@ -33,6 +35,7 @@ Each channel represents a conversation between participants (typically one rider
     profile_image?: string;         // Avatar URL
     metadata?: Record<string, unknown>;  // Domain-specific data (vehicle, rating, etc.)
     joined_at: string;              // ISO 8601 — when participant joined
+    last_read_message_id?: string;  // Most recent message ID marked as read
   }>;
   created_at: string;               // ISO 8601 — channel creation time
   closed_at: string | null;         // ISO 8601 — when closed, or null
@@ -40,7 +43,9 @@ Each channel represents a conversation between participants (typically one rider
 }
 ```
 
-**Indexes:** `{ status: 1 }`
+**Indexes:**
+- `{ status: 1 }` — For querying active/closed channels
+- `{ 'participants.id': 1, status: 1 }` — For looking up channels by participant
 
 Channels are created lazily on first `join` request via `findOrCreateChannel()` (upsert). The `_id` is the channel ID provided by the client, not auto-generated.
 
@@ -96,6 +101,19 @@ Map {
 | `disconnectChannel(channelId)` | Force-close all connections (used when closing a channel) |
 | `getAllChannelIds()` | Iterate over channels with active connections |
 | `getConnectionCount(channelId)` | Number of active connections for a channel |
+
+### Unread Notification Broadcaster
+
+A separate in-memory broadcaster (`src/unread-broadcaster.ts`) manages SSE connections for unread notifications. It is keyed by a composite `channelId:participantId` key with a secondary `channelParticipants` index (`Map<channelId, Set<participantId>>`) for efficient channel-wide broadcasts.
+
+| Function | Description |
+|----------|-------------|
+| `subscribeUnread(channelId, participantId, stream)` | Register an unread SSE connection |
+| `unsubscribeUnread(channelId, participantId, conn)` | Remove a connection; clean up indexes if empty |
+| `broadcastToParticipant(channelId, participantId, event, data)` | Send event to a specific participant's unread connections |
+| `broadcastToChannel(channelId, excludeParticipantId, event, data)` | Send event to all participants' unread connections (except one) |
+
+When a message is sent, `broadcastToChannel` notifies all participants (except the sender) with an `unread_update` event. When a participant marks messages as read, `broadcastToParticipant` sends them an `unread_clear` event.
 
 ### Connection Lifecycle
 
@@ -173,6 +191,9 @@ Core database functions in `src/db.ts`:
 | `getMessageHistory(channelId, options)` | Paginated history with `before`/`after` cursors; capped at 200 |
 | `closeChannel(channelId)` | Set status to `closed` and `closed_at` timestamp; returns `true` if modified |
 | `toMessage(doc)` | Convert internal `MessageDocument` to public `Message` type |
+| `findMessage(messageId, channelId)` | Find a specific message by ID and channel (used for mark-read validation) |
+| `updateLastRead(channelId, participantId, messageId)` | Advance participant's read cursor; only moves forward, never regresses |
+| `getUnreadCount(channelId, participantId)` | Count messages after participant's `last_read_message_id`; returns `{ unread_count, last_message_at }` |
 
 ### Atomicity
 
@@ -196,13 +217,14 @@ server/
     ├── index.ts                  # Entry point — app setup, middleware, route mounting, server export
     ├── env.ts                    # Zod-validated environment variables
     ├── db.ts                     # MongoDB client, collections, all query functions
-    ├── broadcaster.ts            # In-memory SSE connection manager
+    ├── broadcaster.ts            # In-memory SSE connection manager (chat streams)
+    ├── unread-broadcaster.ts     # In-memory SSE connection manager (unread notifications)
     ├── sentry.ts                 # Sentry initialization
     ├── channel-cleanup.ts        # Hourly stale channel cleanup job
     ├── middleware/
     │   ├── api-key.ts            # Timing-safe API key validation
     │   └── auth.ts               # Optional token auth — loads auth.config.ts, caches results
     └── routes/
-        ├── channels.ts           # Client routes: join, send message, stream
+        ├── channels.ts           # Client routes: join, send message, stream, unread stream, mark-read
         └── internal.ts           # Internal routes: system messages, history, close
 ```

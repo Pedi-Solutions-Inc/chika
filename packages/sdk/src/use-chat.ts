@@ -30,6 +30,8 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
 
   const sessionRef = useRef<ChatSession<D> | null>(null);
   const disposedRef = useRef(false);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const statusRef = useRef(status);
   statusRef.current = status;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -127,6 +129,12 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
 
     return () => {
       disposedRef.current = true;
+      if (statusRef.current === 'connected' && sessionRef.current) {
+        const lastMsg = messagesRef.current[messagesRef.current.length - 1];
+        if (lastMsg) {
+          sessionRef.current.markAsRead(lastMsg.id).catch(() => {});
+        }
+      }
       if (backgroundTimerRef.current) {
         clearTimeout(backgroundTimerRef.current);
         backgroundTimerRef.current = null;

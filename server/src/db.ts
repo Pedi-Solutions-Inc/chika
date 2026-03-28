@@ -6,7 +6,7 @@ import { env } from './env';
 export interface ChannelDocument {
   _id: string;
   status: 'active' | 'closed';
-  participants: (Participant & { joined_at: string })[];
+  participants: (Participant & { joined_at: string; last_read_message_id?: string })[];
   created_at: string;
   closed_at: string | null;
   last_activity_at: string;
@@ -33,6 +33,7 @@ export async function connectDb(): Promise<void> {
 
   await Promise.all([
     channels().createIndex({ status: 1 }),
+    channels().createIndex({ 'participants.id': 1, status: 1 }),
     messages().createIndex({ channel_id: 1, created_at: 1 }),
     messages().createIndex({ created_at: 1 }),
   ]);
@@ -69,6 +70,13 @@ export function toMessage(doc: MessageDocument): Message {
 
 export async function findChannel(channelId: string): Promise<ChannelDocument | null> {
   return channels().findOne({ _id: channelId });
+}
+
+export async function findMessage(
+  messageId: string,
+  channelId: string,
+): Promise<MessageDocument | null> {
+  return messages().findOne({ _id: messageId, channel_id: channelId });
 }
 
 export async function findOrCreateChannel(channelId: string): Promise<ChannelDocument> {
@@ -213,3 +221,69 @@ export async function closeChannel(channelId: string): Promise<boolean> {
   );
   return result.modifiedCount > 0;
 }
+
+export async function updateLastRead(
+  channelId: string,
+  participantId: string,
+  messageId: string,
+): Promise<void> {
+  // Only advance the read cursor, never regress it.
+  // Try to update when new messageId is ahead of current.
+  const advanced = await channels().updateOne(
+    {
+      _id: channelId,
+      participants: {
+        $elemMatch: { id: participantId, last_read_message_id: { $lt: messageId } },
+      },
+    },
+    { $set: { 'participants.$.last_read_message_id': messageId } },
+  );
+
+  if (advanced.matchedCount > 0) return;
+
+  // If no match, the field may not exist yet. Set it only if absent.
+  await channels().updateOne(
+    {
+      _id: channelId,
+      participants: {
+        $elemMatch: { id: participantId, last_read_message_id: { $exists: false } },
+      },
+    },
+    { $set: { 'participants.$.last_read_message_id': messageId } },
+  );
+}
+
+export async function getUnreadCount(
+  channelId: string,
+  participantId: string,
+): Promise<{ unread_count: number; last_message_at: string | null }> {
+  const channel = await channels().findOne(
+    { _id: channelId },
+    { projection: { participants: 1 } },
+  );
+
+  if (!channel) return { unread_count: 0, last_message_at: null };
+
+  const participant = channel.participants.find((p) => p.id === participantId);
+  const lastReadId = participant?.last_read_message_id;
+
+  const filter: Record<string, unknown> = { channel_id: channelId };
+  if (lastReadId) {
+    filter._id = { $gt: lastReadId };
+  }
+
+  const [unreadCount, lastMessage] = await Promise.all([
+    messages().countDocuments(filter),
+    messages()
+      .find({ channel_id: channelId })
+      .sort({ _id: -1 })
+      .limit(1)
+      .toArray(),
+  ]);
+
+  return {
+    unread_count: unreadCount,
+    last_message_at: lastMessage[0]?.created_at ?? null,
+  };
+}
+

@@ -12,7 +12,8 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 | `src/env.ts` | Parses and validates `Bun.env` using Zod |
 | `src/db.ts` | MongoDB client, collections, all query/mutation functions |
 | `src/broadcaster.ts` | In-memory `Map<channelId, Set<Connection>>` for SSE fan-out and dead-connection cleanup |
-| `src/routes/channels.ts` | Client-facing: join, send message, SSE stream |
+| `src/unread-broadcaster.ts` | Per-channel-participant SSE broadcaster for unread notifications. Keyed by `channelId:participantId` with secondary `channelParticipants` index for efficient channel-wide broadcasts |
+| `src/routes/channels.ts` | Client-facing: join, send message, SSE stream, unread SSE stream, mark-read |
 | `src/routes/internal.ts` | Internal: system messages, history, close channel |
 | `src/middleware/api-key.ts` | Validates `X-Api-Key` header via `timingSafeEqual` |
 | `src/middleware/auth.ts` | Optional token auth — dynamically loads `auth.config.ts`, caches results |
@@ -33,6 +34,11 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 - `getChannelMessages` is capped at 200 messages (matches internal history max)
 - `addParticipant` upserts: updates profile data if participant exists, inserts if new
 - SSE stream endpoint rejects closed channels with 410
+- `last_read_message_id` tracked per participant in the channel document for unread counting
+- `updateLastRead` only advances the read cursor, never regresses (uses `$elemMatch` with `$lt` guard)
+- `/join` auto-marks messages as read by setting `last_read_message_id` to the latest message
+- Unread SSE stream sends `unread_snapshot` on connect, `unread_update` on new messages, `unread_clear` on mark-read
+- `unread_update` events are minimal: `{ channel_id, message_id, created_at }` (no message body)
 
 ## Data Model
 
