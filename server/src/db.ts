@@ -2,6 +2,9 @@ import { MongoClient, ObjectId, type Db, type Collection, type Filter } from 'mo
 import type { Message, MessageAttributes } from '@pedi/chika-types';
 import type { Participant } from '@pedi/chika-types';
 import { env } from './env';
+import { createComponentLogger } from './logger';
+
+const log = createComponentLogger('db');
 
 export interface ChannelDocument {
   _id: string;
@@ -20,6 +23,7 @@ export interface MessageDocument {
   type: string;
   body: string;
   attributes?: MessageAttributes;
+  idempotency_key?: string;
   created_at: Date;
 }
 
@@ -43,6 +47,10 @@ export async function connectDb(): Promise<void> {
     channels().createIndex({ 'participants.id': 1, status: 1 }),
     messages().createIndex({ channel_id: 1, created_at: 1 }),
     messages().createIndex({ channel_id: 1, _id: 1 }),
+    messages().createIndex(
+      { channel_id: 1, idempotency_key: 1 },
+      { unique: true, sparse: true },
+    ),
   ]);
 }
 
@@ -313,11 +321,19 @@ export async function getUnreadCount(
 }
 
 export async function insertMessage(doc: MessageDocument): Promise<void> {
-  await Promise.all([
-    messages().insertOne(doc),
-    channels().updateOne(
-      { _id: doc.channel_id },
-      { $set: { last_activity_at: doc.created_at } },
-    ),
-  ]);
+  await messages().insertOne(doc);
+  // Best-effort timestamp update — don't let this mask a successful insert
+  await channels().updateOne(
+    { _id: doc.channel_id },
+    { $set: { last_activity_at: doc.created_at } },
+  ).catch((err) => {
+    log.warn('failed to update last_activity_at', { channelId: doc.channel_id, error: String(err) });
+  });
+}
+
+export async function findMessageByIdempotencyKey(
+  channelId: string,
+  key: string,
+): Promise<MessageDocument | null> {
+  return messages().findOne({ channel_id: channelId, idempotency_key: key });
 }

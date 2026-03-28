@@ -13,3 +13,32 @@ export class ChannelClosedError extends Error {
     this.name = 'ChannelClosedError';
   }
 }
+
+export class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: string,
+    public readonly retryAfter?: number,
+  ) {
+    super(`HTTP ${status}: ${body}`);
+    this.name = 'HttpError';
+  }
+}
+
+export class RetryExhaustedError extends Error {
+  constructor(
+    public readonly operation: string,
+    public readonly attempts: number,
+    public readonly lastError: Error,
+  ) {
+    super(`${operation} failed after ${attempts} attempts: ${lastError.message}`);
+    this.name = 'RetryExhaustedError';
+  }
+}
+
+export class QueueFullError extends Error {
+  constructor(public readonly maxSize: number) {
+    super(`Message queue full (max ${maxSize})`);
+    this.name = 'QueueFullError';
+  }
+}
