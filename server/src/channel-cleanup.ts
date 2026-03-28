@@ -8,7 +8,7 @@ const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 async function markStaleChannelsInactive(): Promise<number> {
-  const threshold = new Date(Date.now() - STALE_CHANNEL_THRESHOLD_MS).toISOString();
+  const threshold = new Date(Date.now() - STALE_CHANNEL_THRESHOLD_MS);
 
   const result = await channels().updateMany(
     {
@@ -18,7 +18,7 @@ async function markStaleChannelsInactive(): Promise<number> {
     {
       $set: {
         status: 'closed',
-        closed_at: new Date().toISOString(),
+        closed_at: new Date(),
       },
     },
   );

@@ -71,8 +71,10 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
   let sseConn: SSEConnection | null = null;
   let disposed = false;
 
+  const TRIM_THRESHOLD = MAX_SEEN_IDS * 1.5;
+
   function trimSeenIds(): void {
-    if (seenMessageIds.size <= MAX_SEEN_IDS) return;
+    if (seenMessageIds.size <= TRIM_THRESHOLD) return;
     const ids = [...seenMessageIds];
     seenMessageIds.clear();
     for (const id of ids.slice(-MAX_SEEN_IDS)) {

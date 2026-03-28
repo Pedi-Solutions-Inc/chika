@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
+import { ObjectId } from 'mongodb';
 import { zValidator } from '@hono/zod-validator';
 import { streamSSE } from 'hono/streaming';
-import { ulid } from 'ulid';
 import {
   joinRequestSchema,
   sendMessageRequestSchema,
@@ -18,6 +18,7 @@ import {
   findChannel,
   findMessage,
   toMessage,
+  toParticipant,
   updateLastRead,
   getUnreadCount,
   type MessageDocument,
@@ -31,6 +32,8 @@ import {
 } from '../unread-broadcaster';
 import { getRequestLogger } from '../middleware/request-logger';
 
+const MAX_CHANNEL_ID_LENGTH = 64;
+
 const channels = new Hono();
 
 channels.post(
@@ -42,6 +45,9 @@ channels.post(
   }),
   async (c) => {
     const channelId = c.req.param('channelId');
+    if (channelId.length > MAX_CHANNEL_ID_LENGTH) {
+      return c.json({ error: `Channel ID too long (max ${MAX_CHANNEL_ID_LENGTH} chars)` }, 400);
+    }
     const participant = c.req.valid('json');
     const reqLog = getRequestLogger(c);
 
@@ -58,9 +64,8 @@ channels.post(
       return c.json({ error: 'Channel is closed' }, 410);
     }
 
-    await addParticipant(channelId, participant);
+    const updatedChannel = await addParticipant(channelId, participant);
 
-    const updatedChannel = (await findChannel(channelId))!;
     const messageDocs = await getChannelMessages(channelId);
     const msgs = messageDocs.map(toMessage);
 
@@ -76,12 +81,14 @@ channels.post(
       messages: msgs.length,
     });
 
+    const joinedParticipant = updatedChannel.participants.find(p => p.id === participant.id);
+
     return c.json({
       channel_id: channelId,
       status: updatedChannel.status,
-      participants: updatedChannel.participants,
+      participants: updatedChannel.participants.map(toParticipant),
       messages: msgs,
-      joined_at: new Date().toISOString(),
+      joined_at: joinedParticipant?.joined_at.toISOString() ?? new Date().toISOString(),
     });
   },
 );
@@ -106,10 +113,11 @@ channels.post(
     }
 
     const body = c.req.valid('json');
-    const now = new Date().toISOString();
-    const messageId = `msg_${ulid()}`;
+    const now = new Date();
+    const messageId = new ObjectId();
 
-    const senderParticipant = channel.participants.find((p) => p.id === body.sender_id);
+    const participantMap = new Map(channel.participants.map(p => [p.id, p]));
+    const senderParticipant = participantMap.get(body.sender_id);
     if (!senderParticipant) {
       reqLog.warn('sender not in channel', { channelId, senderId: body.sender_id });
       return c.json({ error: 'Sender has not joined this channel' }, 403);
@@ -117,11 +125,13 @@ channels.post(
 
     reqLog.info('sending message', {
       channelId,
-      messageId,
+      messageId: messageId.toHexString(),
       sender: senderParticipant.name || body.sender_id,
       senderRole: senderParticipant.role,
       type: body.type,
     });
+
+    const hasAttributes = body.attributes && Object.keys(body.attributes).length > 0;
 
     const doc: MessageDocument = {
       _id: messageId,
@@ -130,17 +140,17 @@ channels.post(
       sender_role: senderParticipant.role,
       type: body.type,
       body: body.body,
-      attributes: body.attributes ?? {},
+      ...(hasAttributes ? { attributes: body.attributes } : {}),
       created_at: now,
     };
 
     const request = buildRequestInfo(c);
     const intercepted = await runInterceptors(doc, channel, request, 'client');
     if ('blocked' in intercepted) {
-      reqLog.warn('message blocked by plugin', { channelId, messageId, reason: intercepted.reason });
+      reqLog.warn('message blocked by plugin', { channelId, messageId: messageId.toHexString(), reason: intercepted.reason });
       return c.json({ error: intercepted.reason }, 403);
     }
-    const finalDoc = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
+    const finalDoc: MessageDocument = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
 
     await insertMessage(finalDoc);
 
@@ -149,15 +159,15 @@ channels.post(
 
     await broadcastToChannel(channelId, body.sender_id, 'unread_update', {
       channel_id: channelId,
-      message_id: finalDoc._id,
-      created_at: now,
+      message_id: finalDoc._id.toHexString(),
+      created_at: now.toISOString(),
     });
 
-    runAfterSend(message, channelId, channel.participants, request, 'client');
+    runAfterSend(message, channelId, channel.participants.map(toParticipant), request, 'client');
 
-    reqLog.info('message sent', { channelId, messageId });
+    reqLog.info('message sent', { channelId, messageId: messageId.toHexString() });
 
-    return c.json({ id: finalDoc._id, created_at: now }, 201);
+    return c.json({ id: finalDoc._id.toHexString(), created_at: now.toISOString() }, 201);
   },
 );
 
@@ -240,7 +250,8 @@ channels.get('/:channelId/unread', async (c) => {
     return c.json({ error: 'Channel is closed' }, 410);
   }
 
-  const participantName = channel?.participants.find((p) => p.id === participantId)?.name ?? participantId;
+  const participantMap = new Map(channel?.participants.map(p => [p.id, p]));
+  const participantName = participantMap.get(participantId)?.name ?? participantId;
 
   reqLog.info('unread stream opened', { channelId, participant: participantName });
 
@@ -256,7 +267,7 @@ channels.get('/:channelId/unread', async (c) => {
     let last_message_at: string | null = null;
 
     if (channel) {
-      const participant = channel.participants.find((p) => p.id === participantId);
+      const participant = participantMap.get(participantId);
       if (participant) {
         const counts = await getUnreadCount(channelId, participantId);
         unread_count = counts.unread_count;
@@ -304,7 +315,7 @@ channels.post(
       return c.json({ error: 'Channel not found' }, 404);
     }
 
-    const participant = channel.participants.find((p) => p.id === participant_id);
+    const participant = channel.participants.find(p => p.id === participant_id);
     if (!participant) {
       return c.json({ error: 'Participant not found in channel' }, 403);
     }
@@ -314,15 +325,17 @@ channels.post(
       return c.json({ error: 'Message not found in channel' }, 404);
     }
 
-    await updateLastRead(channelId, participant_id, message_id);
+    await updateLastRead(channelId, participant_id, msg._id);
 
-    const { unread_count } = await getUnreadCount(channelId, participant_id);
-    await broadcastToParticipant(channelId, participant_id, 'unread_clear', {
-      channel_id: channelId,
-      unread_count,
-    });
+    // Fire-and-forget: compute and broadcast unread asynchronously
+    getUnreadCount(channelId, participant_id).then(({ unread_count }) => {
+      broadcastToParticipant(channelId, participant_id, 'unread_clear', {
+        channel_id: channelId,
+        unread_count,
+      }).catch((err) => { reqLog.error('unread broadcast failed', { channelId, error: err }); });
+    }).catch((err) => { reqLog.error('unread count failed', { channelId, error: err }); });
 
-    reqLog.info('marked read', { channelId, participant: participant.name || participant_id, messageId: message_id, unreadCount: unread_count });
+    reqLog.info('marked read', { channelId, participant: participant.name || participant_id, messageId: message_id });
 
     return c.json({ success: true });
   },

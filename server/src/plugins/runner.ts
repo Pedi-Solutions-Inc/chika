@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
-import type { Message } from '@pedi/chika-types';
+import { ObjectId } from 'mongodb';
+import type { Message, Participant } from '@pedi/chika-types';
 import type { MessageDocument, ChannelDocument } from '../db';
 import type { PluginRequestInfo, InterceptResult } from './types';
 import { getInterceptors, getAfterSenders, getPlugins } from './loader';
@@ -60,7 +61,14 @@ export async function runInterceptors(
   let current = message;
 
   for (const plugin of interceptors) {
-    const isolated = structuredClone(current);
+    // JSON round-trip + reconstruct proper types for a plugin-safe deep copy.
+    // structuredClone cannot handle MongoDB ObjectId class instances.
+    const raw = JSON.parse(JSON.stringify(current));
+    const isolated: MessageDocument = {
+      ...raw,
+      _id: new ObjectId(raw._id),
+      created_at: new Date(raw.created_at),
+    };
     const timeout = plugin.interceptTimeout ?? DEFAULT_INTERCEPT_TIMEOUT;
 
     try {
@@ -107,7 +115,7 @@ export async function runInterceptors(
 export function runAfterSend(
   message: Message,
   channelId: string,
-  participants: ChannelDocument['participants'],
+  participants: (Participant & { joined_at: string })[],
   request: PluginRequestInfo,
   source: 'client' | 'system',
 ): void {

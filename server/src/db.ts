@@ -1,4 +1,4 @@
-import { MongoClient, type Db, type Collection, type Filter } from 'mongodb';
+import { MongoClient, ObjectId, type Db, type Collection, type Filter } from 'mongodb';
 import type { Message, MessageAttributes } from '@pedi/chika-types';
 import type { Participant } from '@pedi/chika-types';
 import { env } from './env';
@@ -6,28 +6,35 @@ import { env } from './env';
 export interface ChannelDocument {
   _id: string;
   status: 'active' | 'closed';
-  participants: (Participant & { joined_at: string; last_read_message_id?: string })[];
-  created_at: string;
-  closed_at: string | null;
-  last_activity_at: string;
+  participants: (Participant & { joined_at: Date; last_read_message_id?: ObjectId })[];
+  created_at: Date;
+  closed_at: Date | null;
+  last_activity_at: Date;
 }
 
 export interface MessageDocument {
-  _id: string;
+  _id: ObjectId;
   channel_id: string;
   sender_id: string | null;
   sender_role: string;
   type: string;
   body: string;
-  attributes: MessageAttributes;
-  created_at: string;
+  attributes?: MessageAttributes;
+  created_at: Date;
 }
 
 let client: MongoClient;
 let db: Db;
 
 export async function connectDb(): Promise<void> {
-  client = new MongoClient(env.MONGODB_URI);
+  client = new MongoClient(env.MONGODB_URI, {
+    maxPoolSize: 50,
+    minPoolSize: 5,
+    maxIdleTimeMS: 30_000,
+    connectTimeoutMS: 10_000,
+    serverSelectionTimeoutMS: 5_000,
+    socketTimeoutMS: 45_000,
+  });
   await client.connect();
   db = client.db(env.MONGODB_DB);
 
@@ -35,7 +42,7 @@ export async function connectDb(): Promise<void> {
     channels().createIndex({ status: 1 }),
     channels().createIndex({ 'participants.id': 1, status: 1 }),
     messages().createIndex({ channel_id: 1, created_at: 1 }),
-    messages().createIndex({ created_at: 1 }),
+    messages().createIndex({ channel_id: 1, _id: 1 }),
   ]);
 }
 
@@ -57,14 +64,27 @@ export function messages(): Collection<MessageDocument> {
 
 export function toMessage(doc: MessageDocument): Message {
   return {
-    id: doc._id,
+    id: doc._id.toHexString(),
     channel_id: doc.channel_id,
     sender_id: doc.sender_id,
     sender_role: doc.sender_role,
     type: doc.type as Message['type'],
     body: doc.body,
-    attributes: doc.attributes,
-    created_at: doc.created_at,
+    attributes: doc.attributes ?? {},
+    created_at: doc.created_at.toISOString(),
+  };
+}
+
+export type ApiParticipant = Participant & { joined_at: string };
+
+export function toParticipant(p: ChannelDocument['participants'][number]): ApiParticipant {
+  return {
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    profile_image: p.profile_image,
+    metadata: p.metadata ?? undefined,
+    joined_at: p.joined_at.toISOString(),
   };
 }
 
@@ -76,11 +96,17 @@ export async function findMessage(
   messageId: string,
   channelId: string,
 ): Promise<MessageDocument | null> {
-  return messages().findOne({ _id: messageId, channel_id: channelId });
+  let oid: ObjectId;
+  try {
+    oid = new ObjectId(messageId);
+  } catch {
+    return null;
+  }
+  return messages().findOne({ _id: oid, channel_id: channelId });
 }
 
 export async function findOrCreateChannel(channelId: string): Promise<ChannelDocument> {
-  const now = new Date().toISOString();
+  const now = new Date();
   const result = await channels().findOneAndUpdate(
     { _id: channelId },
     {
@@ -102,47 +128,41 @@ export async function findOrCreateChannel(channelId: string): Promise<ChannelDoc
 export async function addParticipant(
   channelId: string,
   participant: Participant,
-): Promise<void> {
-  const now = new Date().toISOString();
+): Promise<ChannelDocument> {
+  const now = new Date();
 
-  await channels().bulkWrite([
+  // Try to update existing participant first.
+  const updated = await channels().findOneAndUpdate(
+    { _id: channelId, 'participants.id': participant.id },
     {
-      updateOne: {
-        filter: { _id: channelId, 'participants.id': participant.id },
-        update: {
-          $set: {
-            'participants.$.name': participant.name,
-            'participants.$.role': participant.role,
-            'participants.$.profile_image': participant.profile_image,
-            'participants.$.metadata': participant.metadata ?? null,
-          },
-        },
+      $set: {
+        'participants.$.name': participant.name,
+        'participants.$.role': participant.role,
+        'participants.$.profile_image': participant.profile_image,
+        'participants.$.metadata': participant.metadata ?? null,
       },
     },
+    { returnDocument: 'after' },
+  );
+
+  if (updated) return updated;
+
+  // Participant not found — push new entry.
+  const pushed = await channels().findOneAndUpdate(
+    { _id: channelId, 'participants.id': { $ne: participant.id } },
     {
-      updateOne: {
-        filter: { _id: channelId, 'participants.id': { $ne: participant.id } },
-        update: {
-          $push: {
-            participants: { ...participant, joined_at: now },
-          },
-        },
+      $push: {
+        participants: { ...participant, joined_at: now },
       },
     },
-  ]);
+    { returnDocument: 'after' },
+  );
+
+  // If pushed is null, concurrent join already added this participant — fetch latest.
+  return pushed ?? (await channels().findOne({ _id: channelId }))!;
 }
 
-export async function insertMessage(doc: MessageDocument): Promise<void> {
-  await Promise.all([
-    messages().insertOne(doc),
-    channels().updateOne(
-      { _id: doc.channel_id },
-      { $set: { last_activity_at: doc.created_at } },
-    ),
-  ]);
-}
-
-const DEFAULT_JOIN_MESSAGE_LIMIT = 50;
+const DEFAULT_JOIN_MESSAGE_LIMIT = 20;
 
 export async function getChannelMessages(
   channelId: string,
@@ -161,13 +181,20 @@ export async function getMessagesSince(
   channelId: string,
   sinceMessageId: string,
 ): Promise<{ docs: MessageDocument[]; resync: boolean }> {
-  const sinceMsg = await messages().findOne({ _id: sinceMessageId });
+  let sinceOid: ObjectId;
+  try {
+    sinceOid = new ObjectId(sinceMessageId);
+  } catch {
+    return { docs: [], resync: true };
+  }
+
+  const sinceMsg = await messages().findOne({ _id: sinceOid, channel_id: channelId });
   if (!sinceMsg) return { docs: [], resync: true };
 
   const docs = await messages()
     .find({
       channel_id: channelId,
-      _id: { $gt: sinceMessageId },
+      _id: { $gt: sinceOid },
     })
     .sort({ _id: 1 })
     .toArray();
@@ -182,7 +209,7 @@ export async function getMessagesSinceTime(
   return messages()
     .find({
       channel_id: channelId,
-      created_at: { $gt: sinceTime },
+      created_at: { $gt: new Date(sinceTime) },
     })
     .sort({ _id: 1 })
     .toArray();
@@ -194,11 +221,11 @@ export async function getMessageHistory(
 ): Promise<{ docs: MessageDocument[]; hasMore: boolean }> {
   const filter: Filter<MessageDocument> = { channel_id: channelId };
 
-  if (options.before) {
-    filter.created_at = { ...((filter.created_at as object) ?? {}), $lt: options.before };
-  }
-  if (options.after) {
-    filter.created_at = { ...((filter.created_at as object) ?? {}), $gt: options.after };
+  if (options.before || options.after) {
+    const createdAtFilter: Record<string, Date> = {};
+    if (options.before) createdAtFilter.$lt = new Date(options.before);
+    if (options.after) createdAtFilter.$gt = new Date(options.after);
+    filter.created_at = createdAtFilter;
   }
 
   const docs = await messages()
@@ -217,7 +244,7 @@ export async function getMessageHistory(
 export async function closeChannel(channelId: string): Promise<boolean> {
   const result = await channels().updateOne(
     { _id: channelId, status: 'active' },
-    { $set: { status: 'closed', closed_at: new Date().toISOString() } },
+    { $set: { status: 'closed', closed_at: new Date() } },
   );
   return result.modifiedCount > 0;
 }
@@ -225,28 +252,19 @@ export async function closeChannel(channelId: string): Promise<boolean> {
 export async function updateLastRead(
   channelId: string,
   participantId: string,
-  messageId: string,
+  messageId: ObjectId,
 ): Promise<void> {
-  // Only advance the read cursor, never regress it.
-  // Try to update when new messageId is ahead of current.
-  const advanced = await channels().updateOne(
-    {
-      _id: channelId,
-      participants: {
-        $elemMatch: { id: participantId, last_read_message_id: { $lt: messageId } },
-      },
-    },
-    { $set: { 'participants.$.last_read_message_id': messageId } },
-  );
-
-  if (advanced.matchedCount > 0) return;
-
-  // If no match, the field may not exist yet. Set it only if absent.
   await channels().updateOne(
     {
       _id: channelId,
       participants: {
-        $elemMatch: { id: participantId, last_read_message_id: { $exists: false } },
+        $elemMatch: {
+          id: participantId,
+          $or: [
+            { last_read_message_id: { $lt: messageId } },
+            { last_read_message_id: { $exists: false } },
+          ],
+        },
       },
     },
     { $set: { 'participants.$.last_read_message_id': messageId } },
@@ -259,31 +277,47 @@ export async function getUnreadCount(
 ): Promise<{ unread_count: number; last_message_at: string | null }> {
   const channel = await channels().findOne(
     { _id: channelId },
-    { projection: { participants: 1 } },
+    { projection: { participants: { $elemMatch: { id: participantId } } } },
   );
 
   if (!channel) return { unread_count: 0, last_message_at: null };
 
-  const participant = channel.participants.find((p) => p.id === participantId);
+  const participant = channel.participants[0];
   const lastReadId = participant?.last_read_message_id;
 
-  const filter: Record<string, unknown> = { channel_id: channelId };
-  if (lastReadId) {
-    filter._id = { $gt: lastReadId };
-  }
+  const pipeline = [
+    { $match: { channel_id: channelId } },
+    {
+      $facet: {
+        unread: [
+          ...(lastReadId ? [{ $match: { _id: { $gt: lastReadId } } }] : []),
+          { $count: 'total' as const },
+        ],
+        latest: [
+          { $sort: { _id: -1 as const } },
+          { $limit: 1 },
+          { $project: { created_at: 1 } },
+        ],
+      },
+    },
+  ];
 
-  const [unreadCount, lastMessage] = await Promise.all([
-    messages().countDocuments(filter),
-    messages()
-      .find({ channel_id: channelId })
-      .sort({ _id: -1 })
-      .limit(1)
-      .toArray(),
-  ]);
+  const [result] = await messages().aggregate(pipeline).toArray();
+
+  const lastMessageAt = result?.latest?.[0]?.created_at;
 
   return {
-    unread_count: unreadCount,
-    last_message_at: lastMessage[0]?.created_at ?? null,
+    unread_count: result?.unread?.[0]?.total ?? 0,
+    last_message_at: lastMessageAt instanceof Date ? lastMessageAt.toISOString() : (lastMessageAt ?? null),
   };
 }
 
+export async function insertMessage(doc: MessageDocument): Promise<void> {
+  await Promise.all([
+    messages().insertOne(doc),
+    channels().updateOne(
+      { _id: doc.channel_id },
+      { $set: { last_activity_at: doc.created_at } },
+    ),
+  ]);
+}

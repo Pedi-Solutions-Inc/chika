@@ -58,39 +58,48 @@ export function unsubscribeUnread(
   }
 }
 
+function broadcastToParticipantWithPayload(
+  channelId: string,
+  participantId: string,
+  event: string,
+  payload: string,
+): Promise<void> {
+  const k = key(channelId, participantId);
+  const set = connections.get(k);
+  if (!set || set.size === 0) return Promise.resolve();
+
+  const conns = [...set];
+
+  return Promise.allSettled(
+    conns.map((conn) => conn.stream.writeSSE({ event, data: payload })),
+  ).then((results) => {
+    for (const [i, result] of results.entries()) {
+      if (result.status === 'rejected') {
+        set.delete(conns[i]!);
+      }
+    }
+
+    if (set.size === 0) {
+      connections.delete(k);
+      const participants = channelParticipants.get(channelId);
+      if (participants) {
+        participants.delete(participantId);
+        if (participants.size === 0) {
+          channelParticipants.delete(channelId);
+        }
+      }
+    }
+  });
+}
+
 export async function broadcastToParticipant(
   channelId: string,
   participantId: string,
   event: string,
   data: unknown,
 ): Promise<void> {
-  const k = key(channelId, participantId);
-  const set = connections.get(k);
-  if (!set || set.size === 0) return;
-
   const payload = JSON.stringify(data);
-  const conns = [...set];
-
-  const results = await Promise.allSettled(
-    conns.map((conn) => conn.stream.writeSSE({ event, data: payload })),
-  );
-
-  for (const [i, result] of results.entries()) {
-    if (result.status === 'rejected') {
-      set.delete(conns[i]!);
-    }
-  }
-
-  if (set.size === 0) {
-    connections.delete(k);
-    const participants = channelParticipants.get(channelId);
-    if (participants) {
-      participants.delete(participantId);
-      if (participants.size === 0) {
-        channelParticipants.delete(channelId);
-      }
-    }
-  }
+  return broadcastToParticipantWithPayload(channelId, participantId, event, payload);
 }
 
 export async function broadcastToChannel(
@@ -102,10 +111,12 @@ export async function broadcastToChannel(
   const participants = channelParticipants.get(channelId);
   if (!participants) return;
 
+  const payload = JSON.stringify(data);
+
   const tasks: Promise<void>[] = [];
   for (const participantId of participants) {
     if (participantId === excludeParticipantId) continue;
-    tasks.push(broadcastToParticipant(channelId, participantId, event, data));
+    tasks.push(broadcastToParticipantWithPayload(channelId, participantId, event, payload));
   }
 
   await Promise.allSettled(tasks);

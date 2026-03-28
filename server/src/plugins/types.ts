@@ -1,4 +1,4 @@
-import type { Message } from '@pedi/chika-types';
+import type { Message, Participant } from '@pedi/chika-types';
 import type { MessageDocument, ChannelDocument } from '../db';
 
 // ---------------------------------------------------------------------------
@@ -39,8 +39,8 @@ export interface AfterSendContext {
   message: Message;
   /** Channel ID. */
   channelId: string;
-  /** The channel's participant list snapshot. */
-  participants: ChannelDocument['participants'];
+  /** The channel's participant list snapshot (serialized for API consumption). */
+  participants: (Participant & { joined_at: string })[];
   /** Snapshot of the HTTP request (headers, auth token, IP). */
   request: PluginRequestInfo;
   /** 'client' for user messages, 'system' for internal API messages. */

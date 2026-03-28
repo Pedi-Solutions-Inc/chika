@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
+import { ObjectId } from 'mongodb';
 import { zValidator } from '@hono/zod-validator';
-import { ulid } from 'ulid';
 import {
   systemMessageRequestSchema,
   messageHistoryQuerySchema,
@@ -12,6 +12,7 @@ import {
   getMessageHistory,
   closeChannel,
   toMessage,
+  toParticipant,
   type MessageDocument,
 } from '../db';
 import { broadcast, disconnectChannel } from '../broadcaster';
@@ -43,10 +44,12 @@ internal.post(
     }
 
     const body = c.req.valid('json');
-    const now = new Date().toISOString();
-    const messageId = `msg_${ulid()}`;
+    const now = new Date();
+    const messageId = new ObjectId();
 
-    reqLog.info('sending system message', { channelId, messageId, type: body.type });
+    reqLog.info('sending system message', { channelId, messageId: messageId.toHexString(), type: body.type });
+
+    const hasAttributes = body.attributes && Object.keys(body.attributes).length > 0;
 
     const doc: MessageDocument = {
       _id: messageId,
@@ -55,17 +58,17 @@ internal.post(
       sender_role: 'system',
       type: body.type,
       body: body.body,
-      attributes: body.attributes ?? {},
+      ...(hasAttributes ? { attributes: body.attributes } : {}),
       created_at: now,
     };
 
     const request = buildRequestInfo(c);
     const intercepted = await runInterceptors(doc, channel, request, 'system');
     if ('blocked' in intercepted) {
-      reqLog.warn('system message blocked by plugin', { channelId, messageId, reason: intercepted.reason });
+      reqLog.warn('system message blocked by plugin', { channelId, messageId: messageId.toHexString(), reason: intercepted.reason });
       return c.json({ error: intercepted.reason }, 403);
     }
-    const finalDoc = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
+    const finalDoc: MessageDocument = { ...intercepted.message, _id: messageId, channel_id: channelId, created_at: now };
 
     await insertMessage(finalDoc);
 
@@ -74,15 +77,15 @@ internal.post(
 
     await broadcastToChannel(channelId, null, 'unread_update', {
       channel_id: channelId,
-      message_id: finalDoc._id,
-      created_at: now,
+      message_id: finalDoc._id.toHexString(),
+      created_at: now.toISOString(),
     });
 
-    runAfterSend(message, channelId, channel.participants, request, 'system');
+    runAfterSend(message, channelId, channel.participants.map(toParticipant), request, 'system');
 
-    reqLog.info('system message sent', { channelId, messageId });
+    reqLog.info('system message sent', { channelId, messageId: messageId.toHexString() });
 
-    return c.json({ id: finalDoc._id, created_at: now }, 201);
+    return c.json({ id: finalDoc._id.toHexString(), created_at: now.toISOString() }, 201);
   },
 );
 
@@ -113,7 +116,7 @@ internal.get(
 
     return c.json({
       channel_id: channelId,
-      participants: channel.participants,
+      participants: channel.participants.map(toParticipant),
       messages: docs.map(toMessage),
       has_more: hasMore,
     });
