@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# Build from project root: docker build -f server/Dockerfile .
+# Build from project root: docker build -f Dockerfile .
 # =============================================================================
-# Stage 1 — deps
+# Stage 1 — deps (production node_modules only)
 # =============================================================================
 FROM oven/bun:1-alpine AS deps
 
@@ -15,7 +15,29 @@ COPY server/package.json         ./server/
 RUN bun install --frozen-lockfile --production
 
 # =============================================================================
-# Stage 2 — optional server files (plugins, auth config)
+# Stage 2 — build @pedi/chika-types
+# =============================================================================
+FROM oven/bun:1-alpine AS build-types
+
+WORKDIR /app
+
+# Install all deps (including tsup devDependency) scoped to the types package
+COPY package.json bun.lock ./
+COPY packages/types/package.json ./packages/types/
+COPY packages/sdk/package.json   ./packages/sdk/
+COPY server/package.json         ./server/
+
+RUN bun install --frozen-lockfile
+
+# Copy source and build
+COPY packages/types/src/        ./packages/types/src/
+COPY packages/types/tsup.config.ts ./packages/types/
+COPY packages/types/tsconfig.json  ./packages/types/
+
+RUN bun run --cwd packages/types build
+
+# =============================================================================
+# Stage 3 — optional server files (plugins, auth config)
 # =============================================================================
 FROM oven/bun:1-alpine AS optionals
 
@@ -30,7 +52,7 @@ RUN mkdir -p /out/plugins /out/config && \
     true
 
 # =============================================================================
-# Stage 3 — runner
+# Stage 4 — runner
 # =============================================================================
 FROM oven/bun:1-alpine AS runner
 
@@ -40,8 +62,9 @@ WORKDIR /app
 # Workspace-resolved node_modules (includes symlink to packages/types)
 COPY --from=deps --chown=bun:bun /app/node_modules ./node_modules
 
-# Workspace dependency: @pedi/chika-types (Bun resolves TS directly)
-COPY --chown=bun:bun packages/types/ ./packages/types/
+# Workspace dependency: @pedi/chika-types (pre-built dist from build-types stage)
+COPY --from=build-types --chown=bun:bun /app/packages/types/package.json ./packages/types/
+COPY --from=build-types --chown=bun:bun /app/packages/types/dist/        ./packages/types/dist/
 
 # Server source
 COPY --chown=bun:bun server/src/                       ./server/src/
