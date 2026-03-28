@@ -1,6 +1,6 @@
 {
   "name": "@pedi/chika-types",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Shared TypeScript types and Zod schemas for Pedi Chika chat service",
   "license": "MIT",
   "repository": {
