@@ -13,6 +13,7 @@ In-depth guides for understanding how the SDK works under the hood.
 - [Custom Domains](#custom-domains)
 - [Multi-Server Routing](#multi-server-routing)
 - [Error Handling](#error-handling)
+- [Network Resilience](#network-resilience)
 
 ---
 
@@ -78,7 +79,7 @@ If the app returns to `active` within the grace period, the timer is cancelled a
 When an SSE connection drops (network loss, server restart, etc.), the SDK:
 
 1. Sets status to `reconnecting`
-2. Waits `reconnectDelayMs` (default: 3000ms)
+2. Waits with exponential backoff (base: `reconnectDelayMs`, max: 30s, jitter: ±30%). Attempt counter resets on successful connection. When a `NetworkMonitor` is available (resilience enabled), reconnection waits for network connectivity before starting the backoff timer.
 3. Opens a new SSE connection with the `Last-Event-ID` header set to the ID of the last received message
 4. The server replays all messages since that ID (gap-fill)
 5. Replayed messages are deduplicated against the local `seenMessageIds` set
@@ -140,14 +141,18 @@ This provides an instant messaging feel — the message appears in the UI the mo
 
 ### When Optimistic Send Fails
 
-If the `sendMessage` HTTP request fails, the optimistically-added message remains in the array. The SDK does not automatically remove it. Handle this in your UI:
+When resilience is enabled (default), the SDK automatically retries the send with exponential backoff. If the offline queue is enabled, the message stays in the UI with its status tracked in `pendingMessages`. If all retries are exhausted, the message is marked as `'failed'` — the user can call `retryMessage()` or `cancelMessage()` to control it.
 
 ```typescript
 try {
   await sendMessage('chat', text);
 } catch (err) {
-  // Optionally mark the message as failed in your UI
-  showRetryButton(text);
+  if (err instanceof RetryExhaustedError) {
+    // Message is marked 'failed' in pendingMessages
+    // User can retry or cancel via the UI
+  } else if (err instanceof QueueFullError) {
+    showToast('Too many pending messages');
+  }
 }
 ```
 
@@ -335,22 +340,26 @@ if (status === 'error') {
 
 ### Send Errors
 
-`sendMessage` can throw two specific errors:
+`sendMessage` can throw specific errors:
 
 ```typescript
-import { ChatDisconnectedError, ChannelClosedError } from '@pedi/chika-sdk';
+import {
+  ChatDisconnectedError, ChannelClosedError,
+  RetryExhaustedError, QueueFullError,
+} from '@pedi/chika-sdk';
 
 try {
   await sendMessage('chat', text);
 } catch (err) {
-  if (err instanceof ChatDisconnectedError) {
-    // Not connected — show reconnecting UI
-    // err.status tells you the current state
+  if (err instanceof RetryExhaustedError) {
+    // All retry attempts exhausted
+    // err.attempts, err.lastError available
+  } else if (err instanceof QueueFullError) {
+    // Offline queue is full (default max: 50)
+  } else if (err instanceof ChatDisconnectedError) {
+    // Not connected
   } else if (err instanceof ChannelClosedError) {
-    // Channel permanently closed — navigate away
-    // err.channelId identifies which channel
-  } else {
-    // Network error, server error, etc.
+    // Channel permanently closed
   }
 }
 ```
@@ -371,4 +380,57 @@ useEffect(() => {
     showAlert('This conversation has ended.');
   }
 }, [status]);
+```
+
+---
+
+## Network Resilience
+
+The SDK includes built-in network resilience for unreliable mobile connections. All features are enabled by default and fully togglable.
+
+For the full resilience guide, see [Network Resilience Guide](./resilience-guide.md).
+
+### Quick Configuration
+
+```typescript
+const config: ChatConfig = {
+  manifest: createManifest('https://chat.example.com'),
+  // All resilience features on by default. Customize:
+  resilience: {
+    retry: { maxAttempts: 5 },                      // customize retry
+    queueStorage: createQueueStorage() ?? undefined, // persistent queue
+  },
+  // Or disable entirely:
+  // resilience: false,
+};
+```
+
+### What Gets Retried
+
+| Operation | Default Retry | Behavior on Exhaustion |
+|-----------|--------------|----------------------|
+| Join (createChatSession) | 3 attempts | Throws RetryExhaustedError, status → 'error' |
+| sendMessage | 3 attempts | Message marked 'failed' in pendingMessages |
+| markAsRead | 2 attempts | Silently swallowed (best-effort) |
+| SSE reconnection | Unlimited | Exponential backoff until connected |
+
+### Offline Queue
+
+Messages sent while offline are automatically queued and flushed when connectivity returns:
+
+```typescript
+const { pendingMessages, cancelMessage, retryMessage } = useChat<PediChat>({...});
+
+// Render per-message status
+{pendingMessages.map(msg => (
+  <View key={msg.optimisticId}>
+    <Text>Status: {msg.status}</Text>
+    {msg.status === 'failed' && (
+      <>
+        <Button title="Retry" onPress={() => retryMessage(msg.optimisticId)} />
+        <Button title="Cancel" onPress={() => cancelMessage(msg.optimisticId)} />
+      </>
+    )}
+  </View>
+))}
 ```

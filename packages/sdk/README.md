@@ -14,6 +14,9 @@ Provides a drop-in React hook (`useChat`) that connects your React Native app to
 - **Message deduplication** — Prevents duplicate messages from SSE echo and reconnection replays
 - **Optimistic UI** — Messages appear in the local list instantly on send, before server confirmation
 - **Type-safe chat domains** — Full generic support via `ChatDomain` so message types, roles, and attributes are enforced at compile time
+- **Automatic retry on failure** — Failed message sends are automatically retried with exponential backoff before giving up
+- **Offline message queuing** — Messages sent while offline are queued and flushed when connectivity returns
+- **Network-aware reconnection** — SSE reconnection waits for network availability and uses exponential backoff instead of fixed delays
 
 ## Key Features
 
@@ -24,7 +27,14 @@ Provides a drop-in React hook (`useChat`) that connects your React Native app to
 - Platform-aware AppState handling (iOS vs Android)
 - Optimistic message sending with deduplication
 - Hash-based bucket routing for multi-server deployments
-- Custom error classes (`ChatDisconnectedError`, `ChannelClosedError`)
+- Custom error classes (`ChatDisconnectedError`, `ChannelClosedError`, `HttpError`, `RetryExhaustedError`, `QueueFullError`)
+- Network resilience with automatic retry (exponential backoff, jitter, 429 Retry-After support)
+- Offline message queue with per-message status tracking (`sending`, `queued`, `failed`)
+- Optional `@react-native-community/netinfo` integration for network-aware reconnection
+- Persistent queue storage via auto-detected MMKV or AsyncStorage
+- Server-side idempotency keys to prevent duplicate messages on retry
+- Per-message `cancelMessage()` and `retryMessage()` controls
+- All resilience features togglable — set `resilience: false` to disable
 
 ## Quick Start
 
@@ -71,7 +81,49 @@ function ChatListItem({ channelId, userId, config }) {
 
 The hook handles SSE reconnection and AppState-aware lifecycle management automatically. Disable it with `enabled: false` when `useChat` is already active on the same channel.
 
+### Network Resilience
+
+Resilience features automatically handle failures, offline scenarios, and network transitions:
+
+```typescript
+import { useChat, createManifest, createQueueStorage } from '@pedi/chika-sdk';
+
+function ChatScreen({ bookingId, user }) {
+  const {
+    messages, status, sendMessage,
+    pendingMessages, cancelMessage, retryMessage,
+  } = useChat<PediChat>({
+    config: {
+      manifest: createManifest('https://chat.example.com'),
+      headers: { Authorization: `Bearer ${token}` },
+      resilience: {
+        retry: { maxAttempts: 5 },
+        queueStorage: createQueueStorage() ?? undefined,
+      },
+    },
+    channelId: `booking_${bookingId}`,
+    profile: { id: user.id, role: 'rider', name: user.name },
+  });
+
+  // Messages queue automatically when offline, retry on failure
+  await sendMessage('chat', 'Hello!');
+
+  // Show per-message status in UI
+  for (const msg of pendingMessages) {
+    if (msg.status === 'failed') {
+      // Show retry/cancel buttons
+      retryMessage(msg.optimisticId);
+      // or: cancelMessage(msg.optimisticId);
+    }
+  }
+}
+```
+
+Resilience is enabled by default. Disable with `resilience: false` for manual control.
+
 **Peer dependencies:** `react >= 18`, `react-native >= 0.72`
+
+**Optional peer dependencies:** `@react-native-community/netinfo` (network monitoring), `react-native-mmkv` or `@react-native-async-storage/async-storage` (queue persistence)
 
 ## Documentation
 
@@ -79,4 +131,5 @@ See the [docs](./docs/) for detailed documentation:
 
 - [API Reference](./docs/api-reference.md) — `useChat`, `createChatSession`, utilities, error classes, and all config options
 - [Guides](./docs/guides.md) — Connection lifecycle, AppState handling, reconnection, deduplication, custom domains
+- [Network Resilience Guide](./docs/resilience-guide.md) — Retry, offline queue, network monitoring, persistent storage, and configuration
 - [AI Agent Integration Guide](./docs/llm-integration-guide.md) — Patterns, recipes, pitfalls, and checklists for LLM-assisted implementation
