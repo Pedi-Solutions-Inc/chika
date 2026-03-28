@@ -4,6 +4,9 @@ import type { MessageDocument, ChannelDocument } from '../db';
 import type { PluginRequestInfo, InterceptResult } from './types';
 import { getInterceptors, getAfterSenders, getPlugins } from './loader';
 import { captureException } from '../sentry';
+import { createComponentLogger } from '../logger';
+
+const log = createComponentLogger('plugins');
 
 const DEFAULT_INTERCEPT_TIMEOUT = 5_000;
 const DEFAULT_AFTER_SEND_TIMEOUT = 30_000;
@@ -68,11 +71,11 @@ export async function runInterceptors(
           : resultOrPromise;
 
       if (result.action !== 'allow' && result.action !== 'block') {
-        console.warn(`[chika-plugins] "${plugin.name}" returned unexpected action: "${String(result.action)}"`);
+        log.warn('plugin returned unexpected action', { plugin: plugin.name, action: String(result.action) });
       }
 
       if (result.action === 'block') {
-        console.log(`[chika-plugins] Message blocked by "${plugin.name}": ${result.reason ?? 'no reason'}`);
+        log.info('message blocked by plugin', { plugin: plugin.name, reason: result.reason ?? 'no reason' });
         return { blocked: true, reason: result.reason ?? 'Message rejected' };
       }
 
@@ -80,7 +83,7 @@ export async function runInterceptors(
         current = result.message;
       }
     } catch (err) {
-      console.error(`[chika-plugins] Interceptor "${plugin.name}" threw:`, err);
+      log.error('interceptor threw', { plugin: plugin.name, error: err as Error });
       captureException(err);
 
       if (plugin.critical) {
@@ -120,7 +123,7 @@ export function runAfterSend(
           await withTimeout(resultOrPromise, timeout, plugin.name);
         }
       } catch (err) {
-        console.error(`[chika-plugins] afterSend "${plugin.name}" threw:`, err);
+        log.error('afterSend threw', { plugin: plugin.name, error: err as Error });
         captureException(err);
       }
     }),
@@ -139,7 +142,7 @@ export async function destroyPlugins(): Promise<void> {
       try {
         await plugin.destroy();
       } catch (err) {
-        console.error(`[chika-plugins] destroy "${plugin.name}" threw:`, err);
+        log.error('destroy threw', { plugin: plugin.name, error: err as Error });
       }
     }),
   );
