@@ -97,6 +97,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   const callbacks: SessionCallbacks<D> = {
     onMessage: (message) => {
       if (disposedRef.current) return;
+      let matchedOptimisticId: string | null = null;
       setMessages((prev: Message<D>[]) => {
         if (pendingOptimisticIds.current.size === 0) {
           return [...prev, message];
@@ -110,14 +111,22 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
             m.type === message.type,
         );
         if (optimisticIdx !== -1) {
-          const optimisticId = prev[optimisticIdx]!.id;
-          pendingOptimisticIds.current.delete(optimisticId);
+          matchedOptimisticId = prev[optimisticIdx]!.id;
+          pendingOptimisticIds.current.delete(matchedOptimisticId);
           const next = [...prev];
           next[optimisticIdx] = message;
           return next;
         }
         return [...prev, message];
       });
+      // Clean up any queued/failed queue entry — SSE confirmed delivery.
+      // Done outside setMessages updater to avoid setState-in-setState.
+      if (matchedOptimisticId) {
+        const s = queueRef.current?.getStatus(matchedOptimisticId);
+        if (s && s.status !== 'sending') {
+          queueRef.current?.cancel(matchedOptimisticId);
+        }
+      }
       onMessageRef.current?.(message);
     },
     onStatusChange: (nextStatus) => {
@@ -163,6 +172,9 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
 
       sessionRef.current = session;
       setParticipants(session.initialParticipants);
+
+      // Flush any messages queued while session was unavailable
+      queueRef.current?.flush();
 
       // Re-merge any pending optimistic messages after resync
       if (pendingOptimisticIds.current.size > 0) {

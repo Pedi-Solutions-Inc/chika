@@ -1,6 +1,6 @@
 import type { SendMessageResponse } from '@pedi/chika-types';
 import { withRetry, type RetryConfig } from './retry';
-import { QueueFullError } from './errors';
+import { QueueFullError, ChatDisconnectedError } from './errors';
 import type { NetworkMonitor } from './network-monitor';
 
 export interface QueueStorage {
@@ -220,7 +220,7 @@ export class MessageQueue {
       const entry: QueueEntry = {
         optimisticId,
         sendFn,
-        status: this.config.networkMonitor.isConnected() ? 'sending' : 'queued',
+        status: 'queued',
         retryCount: 0,
         abort,
         resolve,
@@ -268,11 +268,17 @@ export class MessageQueue {
     this.entries = [];
   }
 
-  private async flush(): Promise<void> {
+  /**
+   * Trigger a flush of queued messages. Returns immediately if a flush is
+   * already in progress or the network is offline. The in-progress flush
+   * will pick up any newly queued entries via its while loop.
+   */
+  async flush(): Promise<void> {
     if (this.flushing) return;
     if (!this.config.networkMonitor.isConnected()) return;
 
     this.flushing = true;
+    let awaitingSession = false;
 
     try {
       while (this.entries.length > 0) {
@@ -301,6 +307,16 @@ export class MessageQueue {
         } catch (err) {
           if (entry.abort.signal.aborted) continue; // cancelled, already removed
 
+          // Session not yet reconnected — revert to 'queued' and stop flushing.
+          // flush() will be called again when the session is re-established
+          // via the explicit flush() call in use-chat.ts startSession().
+          if (err instanceof ChatDisconnectedError) {
+            entry.status = 'queued';
+            this.config.onStatusChange?.();
+            awaitingSession = true;
+            break;
+          }
+
           entry.status = 'failed';
           entry.error = err instanceof Error ? err : new Error(String(err));
           entry.retryCount++;
@@ -312,6 +328,15 @@ export class MessageQueue {
       }
     } finally {
       this.flushing = false;
+      // Re-check: entries may have been added while we were flushing.
+      // Skip if we're waiting for session — startSession() will call flush().
+      if (
+        !awaitingSession &&
+        this.entries.some((e) => e.status === 'queued') &&
+        this.config.networkMonitor.isConnected()
+      ) {
+        queueMicrotask(() => this.flush());
+      }
     }
   }
 
