@@ -11,6 +11,7 @@ In-depth guides for understanding how the SDK works under the hood.
 - [Optimistic Send](#optimistic-send)
 - [Resync](#resync)
 - [Custom Domains](#custom-domains)
+- [System Message Profiles](#system-message-profiles)
 - [Multi-Server Routing](#multi-server-routing)
 - [Error Handling](#error-handling)
 - [Network Resilience](#network-resilience)
@@ -229,6 +230,100 @@ function DeliveryChatScreen({ orderId, user }) {
     location: { lat: 14.5, lng: 120.9 },
   });
 }
+```
+
+---
+
+## System Message Profiles
+
+System messages (sent via the internal API) have `sender_id: null` and `sender_role: 'system'`. Sometimes you want these messages to appear as if they came from a specific participant — for example, "Your driver has arrived" should look like it came from the driver, with their name and avatar.
+
+The `resolveSystemProfile` option on `useChat` lets you map system messages to a participant profile for display purposes. This is purely a client-side enrichment — the server and database are unaffected.
+
+### Basic Usage
+
+```typescript
+import { useChat, createManifest } from '@pedi/chika-sdk';
+import type { PediChat } from '@pedi/chika-types';
+
+const { messages } = useChat<PediChat>({
+  config: { manifest: createManifest('https://chat.example.com') },
+  channelId: `booking_${bookingId}`,
+  profile: myProfile,
+  resolveSystemProfile: (message, participants) => {
+    if (message.type === 'driver_arrived' || message.type === 'booking_started') {
+      return participants.find(p => p.role === 'driver');
+    }
+  },
+});
+```
+
+When the resolver returns a profile, the message in the `messages` array gets an `as_participant` field:
+
+```typescript
+// In your render:
+messages.map(msg => {
+  if (msg.as_participant) {
+    // Render with the participant's name/avatar
+    return <ChatBubble name={msg.as_participant.name} avatar={msg.as_participant.profile_image} body={msg.body} />;
+  }
+  if (msg.sender_role === 'system') {
+    // Unresolved system message — render as a centered notice
+    return <SystemNotice body={msg.body} />;
+  }
+  // Regular participant message
+  return <ChatBubble name={getSenderName(msg)} body={msg.body} />;
+});
+```
+
+### How It Works
+
+1. The `resolveSystemProfile` callback is called for every system message (`sender_role === 'system'`) whenever `messages` or `participants` change.
+2. If the callback returns a `ParticipantProfile` (an object with `name`, `role`, and optionally `profile_image`), it's attached as `as_participant` on the message.
+3. If the callback returns `undefined`, the message is left as-is (no `as_participant` field).
+4. The enrichment is memoized — it only recomputes when the messages or participants arrays change.
+
+### Type Safety
+
+`ParticipantProfile<D>` is `Pick<Participant<D>, 'name' | 'role' | 'profile_image'>`. Since it's a subset of `Participant`, you can return a full `Participant` object directly — TypeScript's structural typing handles the rest:
+
+```typescript
+resolveSystemProfile: (msg, participants) => {
+  // This works — Participant satisfies ParticipantProfile
+  return participants.find(p => p.role === 'driver');
+}
+```
+
+You can also return a custom profile object when you don't want to use a real participant:
+
+```typescript
+resolveSystemProfile: (msg, participants) => {
+  const driver = participants.find(p => p.role === 'driver');
+  if (!driver) return;
+  return {
+    name: driver.name,
+    role: driver.role,
+    profile_image: driver.profile_image ?? 'https://cdn.example.com/default-driver.png',
+  };
+}
+```
+
+### The `onMessage` Callback
+
+When `resolveSystemProfile` is provided, the `onMessage` callback also receives enriched `ChatMessage<D>` objects with `as_participant` attached for system messages:
+
+```typescript
+useChat<PediChat>({
+  // ...
+  resolveSystemProfile: (msg, participants) =>
+    participants.find(p => p.role === 'driver'),
+  onMessage: (msg) => {
+    if (msg.as_participant) {
+      // System message resolved to a participant
+      showNotification(`${msg.as_participant.name}: ${msg.body}`);
+    }
+  },
+});
 ```
 
 ---

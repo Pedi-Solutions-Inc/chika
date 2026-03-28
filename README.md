@@ -127,6 +127,7 @@ cd server && bunx tsc --noEmit # server
 - `useChat<D>()` React hook with full TypeScript generics
 - `createChatSession<D>()` imperative API for non-React usage
 - **`useUnread()` hook** — Real-time unread count tracking with AppState-aware lifecycle management. See [Unread Notifications](#unread-notifications)
+- **System message profiles** — Make system messages appear as a participant (e.g. driver) via `resolveSystemProfile`
 - Automatic SSE reconnection with configurable delay
 - Platform-aware AppState handling (iOS vs Android)
 - Optimistic message sending with automatic deduplication

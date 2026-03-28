@@ -8,7 +8,7 @@ export { withRetry, isRetryableError, calculateBackoff, resolveRetryConfig } fro
 export { createNetworkMonitor } from './network-monitor';
 export { createQueueStorage, createAsyncStorageAdapter } from './message-queue';
 
-export type { ChatConfig, ChatStatus, UseChatOptions, UseChatReturn, ResilienceConfig } from './types';
+export type { ChatConfig, ChatStatus, UseChatOptions, UseChatReturn, ResilienceConfig, ParticipantProfile, ChatMessage } from './types';
 export type { ChatSession, SessionCallbacks } from './session';
 export type { UseUnreadOptions, UseUnreadReturn } from './use-unread';
 export type { SSEConnection, SSEConnectionConfig, SSEConnectionCallbacks } from './sse-connection';

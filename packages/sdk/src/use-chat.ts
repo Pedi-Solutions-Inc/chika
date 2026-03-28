@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { AppState, Platform, type AppStateStatus } from 'react-native';
 import type {
   ChatDomain,
@@ -8,7 +8,7 @@ import type {
   MessageAttributes,
   SendMessageResponse,
 } from '@pedi/chika-types';
-import type { UseChatOptions, UseChatReturn, ChatStatus } from './types';
+import type { UseChatOptions, UseChatReturn, ChatStatus, ChatMessage } from './types';
 import { ChatDisconnectedError, ChannelClosedError, QueueFullError, RetryExhaustedError } from './errors';
 import { isRetryableError, resolveRetryConfig } from './retry';
 import { createChatSession, type ChatSession, type SessionCallbacks } from './session';
@@ -29,7 +29,7 @@ const queueRegistry = new Map<string, { queue: MessageQueue; refCount: number }>
  * @template D - Chat domain type for role/message type narrowing. Defaults to DefaultDomain.
  */
 export function useChat<D extends ChatDomain = DefaultDomain>(
-  { config, channelId, profile, onMessage }: UseChatOptions<D>,
+  { config, channelId, profile, onMessage, resolveSystemProfile }: UseChatOptions<D>,
 ): UseChatReturn<D> {
   const [messages, setMessages] = useState<Message<D>[]>([]);
   const [participants, setParticipants] = useState<Participant<D>[]>([]);
@@ -41,6 +41,8 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   const disposedRef = useRef(false);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const participantsRef = useRef(participants);
+  participantsRef.current = participants;
   const statusRef = useRef(status);
   statusRef.current = status;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -51,6 +53,8 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
   configRef.current = config;
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
+  const resolveSystemProfileRef = useRef(resolveSystemProfile);
+  resolveSystemProfileRef.current = resolveSystemProfile;
   const startingRef = useRef(false);
   const pendingOptimisticIds = useRef(new Set<string>());
   const markReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -171,7 +175,13 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
       if (message.sender_id !== profileRef.current.id) {
         scheduleMarkAsRead(message.id);
       }
-      onMessageRef.current?.(message);
+      const resolver = resolveSystemProfileRef.current;
+      if (resolver && message.sender_role === 'system') {
+        const resolvedProfile = resolver(message, participantsRef.current);
+        onMessageRef.current?.(resolvedProfile ? { ...message, as_participant: resolvedProfile } : message);
+      } else {
+        onMessageRef.current?.(message);
+      }
     },
     onStatusChange: (nextStatus) => {
       if (disposedRef.current) return;
@@ -492,8 +502,17 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
     setStatus('disconnected');
   }, []);
 
+  const enrichedMessages: ChatMessage<D>[] = useMemo(() => {
+    if (!resolveSystemProfile) return messages;
+    return messages.map((msg) => {
+      if (msg.sender_role !== 'system') return msg;
+      const resolved = resolveSystemProfile(msg, participants);
+      return resolved ? { ...msg, as_participant: resolved } : msg;
+    });
+  }, [messages, participants, resolveSystemProfile]);
+
   return {
-    messages,
+    messages: enrichedMessages,
     participants,
     status,
     error,

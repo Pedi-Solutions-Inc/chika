@@ -13,6 +13,15 @@ import type { QueueStorage, QueuedMessage } from './message-queue';
 
 export type ChatStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'closed' | 'error';
 
+export type ParticipantProfile<D extends ChatDomain = DefaultDomain> = Pick<
+  Participant<D>,
+  'name' | 'role' | 'profile_image'
+>;
+
+export interface ChatMessage<D extends ChatDomain = DefaultDomain> extends Message<D> {
+  as_participant?: ParticipantProfile<D>;
+}
+
 export interface ResilienceConfig {
   /** Retry config overrides. Set false to disable retry entirely. */
   retry?: Partial<RetryConfig> | false;
@@ -49,11 +58,12 @@ export interface UseChatOptions<D extends ChatDomain = DefaultDomain> {
   config: ChatConfig;
   channelId: string;
   profile: Participant<D>;
-  onMessage?: (message: Message<D>) => void;
+  onMessage?: (message: ChatMessage<D>) => void;
+  resolveSystemProfile?: (message: Message<D>, participants: Participant<D>[]) => ParticipantProfile<D> | undefined;
 }
 
 export interface UseChatReturn<D extends ChatDomain = DefaultDomain> {
-  messages: Message<D>[];
+  messages: ChatMessage<D>[];
   participants: Participant<D>[];
   status: ChatStatus;
   error: Error | null;

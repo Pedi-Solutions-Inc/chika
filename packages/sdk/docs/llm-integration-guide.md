@@ -201,11 +201,23 @@ await sendMessage('booking_completed', 'Trip completed', { booking_id: bookingId
 
 ### Rendering Messages by Type
 
-Different message types should render differently:
+Different message types should render differently. When `resolveSystemProfile` is provided, system messages can carry an `as_participant` field for rendering with a participant's identity:
 
 ```typescript
-function MessageBubble({ message }: { message: Message<PediChat> }) {
-  // System messages (sender_id is null, sender_role is 'system')
+function MessageBubble({ message }: { message: ChatMessage<PediChat> }) {
+  // System messages with a resolved participant profile
+  if (message.sender_role === 'system' && message.as_participant) {
+    return (
+      <EventCard
+        icon="pin"
+        text={message.body}
+        senderName={message.as_participant.name}
+        avatar={message.as_participant.profile_image}
+      />
+    );
+  }
+
+  // System messages without a profile (plain notices)
   if (message.sender_role === 'system') {
     return <SystemNotice text={message.body} />;
   }
@@ -232,6 +244,28 @@ function MessageBubble({ message }: { message: Message<PediChat> }) {
       );
   }
 }
+```
+
+### System Message Profiles
+
+Use `resolveSystemProfile` to make system messages appear as if they came from a participant. The resolver receives the message and current participants, and returns a `ParticipantProfile` (or `undefined` to skip):
+
+```typescript
+const { messages } = useChat<PediChat>({
+  config: CHAT_CONFIG,
+  channelId: `booking_${bookingId}`,
+  profile: myProfile,
+  resolveSystemProfile: (msg, participants) => {
+    // "Driver arrived" and "Booking started" appear as the driver
+    if (msg.type === 'driver_arrived' || msg.type === 'booking_started') {
+      return participants.find(p => p.role === 'driver');
+    }
+    // Other system messages remain as plain system notices
+  },
+});
+```
+
+You can return a full `Participant` object — TypeScript's structural typing accepts it since `ParticipantProfile` is `Pick<Participant, 'name' | 'role' | 'profile_image'>`.
 ```
 
 ### Listening for Specific Events

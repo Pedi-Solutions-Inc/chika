@@ -40,7 +40,8 @@ interface UseChatOptions<D extends ChatDomain = DefaultDomain> {
   config: ChatConfig;
   channelId: string;
   profile: Participant<D>;
-  onMessage?: (message: Message<D>) => void;
+  onMessage?: (message: ChatMessage<D>) => void;
+  resolveSystemProfile?: (message: Message<D>, participants: Participant<D>[]) => ParticipantProfile<D> | undefined;
 }
 ```
 
@@ -49,13 +50,14 @@ interface UseChatOptions<D extends ChatDomain = DefaultDomain> {
 | `config` | `ChatConfig` | Yes | Connection and behavior configuration |
 | `channelId` | `string` | Yes | Channel to connect to |
 | `profile` | `Participant<D>` | Yes | Current user's participant profile (sent on join) |
-| `onMessage` | `(msg: Message<D>) => void` | No | Callback fired for each new message (after deduplication) |
+| `onMessage` | `(msg: ChatMessage<D>) => void` | No | Callback fired for each new message (after deduplication). System messages include `as_participant` if `resolveSystemProfile` is provided. |
+| `resolveSystemProfile` | `(msg, participants) => ParticipantProfile<D> \| undefined` | No | Maps system messages to a participant profile for display. When provided, system messages in the `messages` array and `onMessage` callback include an `as_participant` field. See [System Message Profiles](./guides.md#system-message-profiles). |
 
 ### Return Value
 
 ```typescript
 interface UseChatReturn<D extends ChatDomain = DefaultDomain> {
-  messages: Message<D>[];
+  messages: ChatMessage<D>[];
   participants: Participant<D>[];
   status: ChatStatus;
   error: Error | null;
@@ -73,7 +75,7 @@ interface UseChatReturn<D extends ChatDomain = DefaultDomain> {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `messages` | `Message<D>[]` | All messages — historical (from join) + new (from SSE). Grows over the session lifetime. |
+| `messages` | `ChatMessage<D>[]` | All messages — historical (from join) + new (from SSE). Grows over the session lifetime. System messages include `as_participant` when `resolveSystemProfile` is provided. |
 | `participants` | `Participant<D>[]` | Current channel participants (from join response) |
 | `status` | `ChatStatus` | Current connection status |
 | `error` | `Error \| null` | Most recent error, or `null` |
@@ -849,6 +851,42 @@ if (!asyncStorage) {
   console.warn('@react-native-async-storage/async-storage not installed');
 }
 ```
+
+---
+
+### ParticipantProfile\<D\>
+
+A lightweight subset of `Participant` used to visually associate a system message with a participant without adding them as a real channel participant.
+
+```typescript
+type ParticipantProfile<D extends ChatDomain = DefaultDomain> = Pick<
+  Participant<D>,
+  'name' | 'role' | 'profile_image'
+>;
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Display name |
+| `role` | `D['role']` | Participant role (e.g. `'driver'`) |
+| `profile_image` | `string \| undefined` | Avatar URL |
+
+Since `ParticipantProfile` is a `Pick` of `Participant`, any `Participant` object satisfies this type — you can return a participant directly from `resolveSystemProfile` without transformation.
+
+### ChatMessage\<D\>
+
+Extends `Message<D>` with an optional participant profile for system message display.
+
+```typescript
+interface ChatMessage<D extends ChatDomain = DefaultDomain> extends Message<D> {
+  as_participant?: ParticipantProfile<D>;
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| *(all Message fields)* | — | Inherited from `Message<D>` |
+| `as_participant` | `ParticipantProfile<D> \| undefined` | Present on system messages when `resolveSystemProfile` returns a profile. Absent on regular messages and unresolved system messages. |
 
 ---
 
