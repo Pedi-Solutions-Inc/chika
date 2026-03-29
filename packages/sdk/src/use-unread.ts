@@ -31,6 +31,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
   const [error, setError] = useState<Error | null>(null);
 
   const connRef = useRef<SSEConnection | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configRef = useRef(config);
   configRef.current = config;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -74,6 +75,8 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
     connRef.current?.close();
     connRef.current = null;
 
+    let hasConnected = false;
+
     const serviceUrl = resolveServerUrl(configRef.current.manifest, channelId);
     const customHeaders = configRef.current.headers ?? {};
     const url = `${serviceUrl}/channels/${channelId}/unread?participant_id=${encodeURIComponent(participantId)}`;
@@ -88,6 +91,20 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
       },
       {
         onOpen: () => {
+          if (hasConnected) {
+            // SSE layer reconnected (server restart, network recovery, etc.)
+            // Schedule a fresh connection on the next tick to avoid synchronous
+            // recursion. The new connection won't carry a stale Last-Event-ID,
+            // so the server sends a new unread_snapshot with current counts.
+            if (!reconnectTimerRef.current) {
+              reconnectTimerRef.current = setTimeout(() => {
+                reconnectTimerRef.current = null;
+                connect();
+              }, 0);
+            }
+            return;
+          }
+          hasConnected = true;
           setError(null);
         },
         onEvent: (eventType, data) => {
@@ -119,6 +136,10 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
   }, [channelId, participantId]);
 
   const disconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     connRef.current?.close();
     connRef.current = null;
   }, []);
@@ -139,7 +160,7 @@ export function useUnread(options: UseUnreadOptions): UseUnreadReturn {
     connect();
 
     return () => {
-      disconnect();
+      disconnect(); // clears reconnectTimerRef
       if (backgroundTimerRef.current) {
         clearTimeout(backgroundTimerRef.current);
         backgroundTimerRef.current = null;

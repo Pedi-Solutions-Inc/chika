@@ -125,6 +125,8 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
   function connect(): void {
     if (disposed) return;
 
+    let hasConnected = false;
+
     const streamUrl = lastEventId
       ? `${serviceUrl}/channels/${channelId}/stream`
       : `${serviceUrl}/channels/${channelId}/stream?since_time=${encodeURIComponent(joinedAt)}`;
@@ -140,7 +142,15 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
       },
       {
         onOpen: () => {
-          if (!disposed) callbacks.onStatusChange('connected');
+          if (disposed) return;
+          if (hasConnected) {
+            // SSE layer reconnected (server restart, network recovery, etc.)
+            // Trigger full session recreation so we re-join and get fresh state.
+            callbacks.onResync();
+            return;
+          }
+          hasConnected = true;
+          callbacks.onStatusChange('connected');
         },
         onEvent: (eventType, data, eventId) => {
           if (disposed) return;
