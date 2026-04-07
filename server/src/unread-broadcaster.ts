@@ -102,6 +102,28 @@ export async function broadcastToParticipant(
   return broadcastToParticipantWithPayload(channelId, participantId, event, payload);
 }
 
+export async function disconnectUnreadChannel(channelId: string): Promise<void> {
+  const participants = channelParticipants.get(channelId);
+  if (!participants) return;
+
+  const closePromises: Promise<void>[] = [];
+  for (const participantId of participants) {
+    const k = key(channelId, participantId);
+    const set = connections.get(k);
+    if (set) {
+      for (const conn of set) {
+        closePromises.push(
+          conn.stream.close().catch(() => {}),
+        );
+      }
+      connections.delete(k);
+    }
+  }
+
+  channelParticipants.delete(channelId);
+  await Promise.allSettled(closePromises);
+}
+
 export async function broadcastToChannel(
   channelId: string,
   excludeParticipantId: string | null,

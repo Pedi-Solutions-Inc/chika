@@ -221,11 +221,23 @@ channels.get('/:channelId/stream', async (c) => {
       unsubscribe(channelId, conn);
     });
 
-    if (lastEventId) {
-      const { docs: missed, resync } = await getMessagesSince(channelId, lastEventId);
-      if (resync) {
-        await stream.writeSSE({ event: 'resync', data: '' });
-      } else {
+    try {
+      if (lastEventId) {
+        const { docs: missed, resync } = await getMessagesSince(channelId, lastEventId);
+        if (resync) {
+          await stream.writeSSE({ event: 'resync', data: '' });
+        } else {
+          for (const doc of missed) {
+            const msg = toMessage(doc);
+            await stream.writeSSE({
+              id: msg.id,
+              event: 'message',
+              data: JSON.stringify(msg),
+            });
+          }
+        }
+      } else if (sinceTime) {
+        const missed = await getMessagesSinceTime(channelId, sinceTime);
         for (const doc of missed) {
           const msg = toMessage(doc);
           await stream.writeSSE({
@@ -235,28 +247,20 @@ channels.get('/:channelId/stream', async (c) => {
           });
         }
       }
-    } else if (sinceTime) {
-      const missed = await getMessagesSinceTime(channelId, sinceTime);
-      for (const doc of missed) {
-        const msg = toMessage(doc);
-        await stream.writeSSE({
-          id: msg.id,
-          event: 'message',
-          data: JSON.stringify(msg),
-        });
-      }
-    }
 
-    while (true) {
-      try {
-        await stream.writeSSE({
-          event: 'heartbeat',
-          data: '',
-        });
-        await stream.sleep(30_000);
-      } catch {
-        break;
+      while (true) {
+        try {
+          await stream.writeSSE({
+            event: 'heartbeat',
+            data: '',
+          });
+          await stream.sleep(30_000);
+        } catch {
+          break;
+        }
       }
+    } finally {
+      unsubscribe(channelId, conn);
     }
   });
 });
@@ -288,37 +292,41 @@ channels.get('/:channelId/unread', async (c) => {
       unsubscribeUnread(channelId, participantId, conn);
     });
 
-    let unread_count = 0;
-    let last_message_at: string | null = null;
+    try {
+      let unread_count = 0;
+      let last_message_at: string | null = null;
 
-    if (channel) {
-      const participant = participantMap.get(participantId);
-      if (participant) {
-        const counts = await getUnreadCount(channelId, participantId);
-        unread_count = counts.unread_count;
-        last_message_at = counts.last_message_at;
+      if (channel) {
+        const participant = participantMap.get(participantId);
+        if (participant) {
+          const counts = await getUnreadCount(channelId, participantId);
+          unread_count = counts.unread_count;
+          last_message_at = counts.last_message_at;
+        }
       }
-    }
 
-    await stream.writeSSE({
-      event: 'unread_snapshot',
-      data: JSON.stringify({
-        channel_id: channelId,
-        unread_count,
-        last_message_at,
-      }),
-    });
+      await stream.writeSSE({
+        event: 'unread_snapshot',
+        data: JSON.stringify({
+          channel_id: channelId,
+          unread_count,
+          last_message_at,
+        }),
+      });
 
-    while (true) {
-      try {
-        await stream.writeSSE({
-          event: 'heartbeat',
-          data: '',
-        });
-        await stream.sleep(30_000);
-      } catch {
-        break;
+      while (true) {
+        try {
+          await stream.writeSSE({
+            event: 'heartbeat',
+            data: '',
+          });
+          await stream.sleep(30_000);
+        } catch {
+          break;
+        }
       }
+    } finally {
+      unsubscribeUnread(channelId, participantId, conn);
     }
   });
 });

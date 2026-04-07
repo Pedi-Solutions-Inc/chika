@@ -32,8 +32,8 @@ let db: Db;
 
 export async function connectDb(): Promise<void> {
   client = new MongoClient(env.MONGODB_URI, {
-    maxPoolSize: 50,
-    minPoolSize: 5,
+    maxPoolSize: 10,
+    minPoolSize: 1,
     maxIdleTimeMS: 30_000,
     connectTimeoutMS: 10_000,
     serverSelectionTimeoutMS: 5_000,
@@ -199,13 +199,19 @@ export async function getMessagesSince(
   const sinceMsg = await messages().findOne({ _id: sinceOid, channel_id: channelId });
   if (!sinceMsg) return { docs: [], resync: true };
 
+  const REPLAY_LIMIT = 500;
   const docs = await messages()
     .find({
       channel_id: channelId,
       _id: { $gt: sinceOid },
     })
     .sort({ _id: 1 })
+    .limit(REPLAY_LIMIT + 1)
     .toArray();
+
+  if (docs.length > REPLAY_LIMIT) {
+    return { docs: [], resync: true };
+  }
 
   return { docs, resync: false };
 }
@@ -220,6 +226,7 @@ export async function getMessagesSinceTime(
       created_at: { $gt: new Date(sinceTime) },
     })
     .sort({ _id: 1 })
+    .limit(500)
     .toArray();
 }
 

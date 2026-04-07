@@ -5,6 +5,7 @@ import { channels } from './routes/channels';
 import { internal } from './routes/internal';
 import { connectDb, disconnectDb, getDb } from './db';
 import { getAllChannelIds, disconnectChannel } from './broadcaster';
+import { disconnectUnreadChannel } from './unread-broadcaster';
 import { rateLimiter } from 'hono-rate-limiter';
 import { startChannelCleanup, stopChannelCleanup } from './channel-cleanup';
 import { initSentry, captureException } from './sentry';
@@ -77,7 +78,7 @@ app.use('/channels/:channelId/*', requireAuth);
 app.route('/channels', channels);
 app.route('/internal/channels', internal);
 
-initSentry();
+await initSentry();
 await connectDb();
 await initAuth();
 await loadPlugins();
@@ -91,7 +92,9 @@ async function shutdown() {
   await destroyPlugins();
 
   const channelIds = [...getAllChannelIds()];
-  await Promise.allSettled(channelIds.map((id) => disconnectChannel(id)));
+  await Promise.allSettled(
+    channelIds.flatMap((id) => [disconnectChannel(id), disconnectUnreadChannel(id)]),
+  );
 
   await disconnectDb();
   process.exit(0);

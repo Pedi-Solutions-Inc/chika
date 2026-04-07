@@ -16,6 +16,7 @@ import {
   type MessageDocument,
 } from '../db';
 import { broadcast, disconnectChannel } from '../broadcaster';
+import { disconnectUnreadChannel } from '../unread-broadcaster';
 import { broadcastToChannel } from '../unread-broadcaster';
 import { requireApiKey } from '../middleware/api-key';
 import { getRequestLogger } from '../middleware/request-logger';
@@ -141,7 +142,10 @@ internal.post('/:channelId/close', async (c) => {
     return c.json({ error: 'Channel is already closed' }, 410);
   }
 
-  await disconnectChannel(channelId);
+  await Promise.all([
+    disconnectChannel(channelId),
+    disconnectUnreadChannel(channelId),
+  ]);
 
   reqLog.info('channel closed', { channelId });
 
