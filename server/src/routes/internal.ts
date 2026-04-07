@@ -19,6 +19,7 @@ import { broadcast, disconnectChannel } from '../broadcaster';
 import { broadcastToChannel } from '../unread-broadcaster';
 import { requireApiKey } from '../middleware/api-key';
 import { getRequestLogger } from '../middleware/request-logger';
+import { incrementMessageCount } from '../message-counter';
 
 const internal = new Hono();
 
@@ -81,6 +82,7 @@ internal.post(
       created_at: now.toISOString(),
     });
 
+    incrementMessageCount();
     runAfterSend(message, channelId, channel.participants.map(toParticipant), request, 'system');
 
     reqLog.info('system message sent', { channelId, messageId: messageId.toHexString() });

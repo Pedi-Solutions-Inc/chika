@@ -13,6 +13,7 @@ import { loadPlugins, destroyPlugins } from './plugins';
 import { env } from './env';
 import { log } from './logger';
 import { requestLogger, getRequestLogger } from './middleware/request-logger';
+import { getMessageCounts } from './message-counter';
 
 const app = new Hono();
 
@@ -34,6 +35,16 @@ app.get('/health', async (c) => {
   } catch {
     return c.json({ status: 'unhealthy' }, 503);
   }
+});
+
+app.get('/stats', async (c) => {
+  const counts = await getMessageCounts();
+  return c.json({
+    messages: {
+      total: counts.total,
+      session: counts.session,
+    },
+  });
 });
 
 const channelRateLimit = rateLimiter({

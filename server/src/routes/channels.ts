@@ -32,6 +32,7 @@ import {
   broadcastToChannel,
 } from '../unread-broadcaster';
 import { getRequestLogger } from '../middleware/request-logger';
+import { incrementMessageCount } from '../message-counter';
 
 const MAX_CHANNEL_ID_LENGTH = 64;
 
@@ -186,6 +187,7 @@ channels.post(
       created_at: now.toISOString(),
     });
 
+    incrementMessageCount();
     runAfterSend(message, channelId, channel.participants.map(toParticipant), request, 'client');
 
     reqLog.info('message sent', { channelId, messageId: messageId.toHexString() });
