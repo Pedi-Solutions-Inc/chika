@@ -1,7 +1,12 @@
 import type { SSEStreamingApi } from 'hono/streaming';
+import { createComponentLogger } from './logger';
+
+const log = createComponentLogger('unread-broadcaster');
 
 interface Connection {
   stream: SSEStreamingApi;
+  channelId: string;
+  participantId: string;
 }
 
 const connections = new Map<string, Set<Connection>>();
@@ -16,7 +21,7 @@ export function subscribeUnread(
   participantId: string,
   stream: SSEStreamingApi,
 ): Connection {
-  const conn: Connection = { stream };
+  const conn: Connection = { stream, channelId, participantId };
   const k = key(channelId, participantId);
 
   let set = connections.get(k);
@@ -142,4 +147,44 @@ export async function broadcastToChannel(
   }
 
   await Promise.allSettled(tasks);
+}
+
+export function getTotalUnreadConnectionCount(): number {
+  let total = 0;
+  for (const set of connections.values()) {
+    total += set.size;
+  }
+  return total;
+}
+
+export function sweepDeadUnreadConnections(): number {
+  let swept = 0;
+
+  for (const [k, set] of connections) {
+    const first = set.values().next().value;
+
+    for (const conn of set) {
+      if (conn.stream.closed || conn.stream.aborted) {
+        set.delete(conn);
+        swept++;
+      }
+    }
+
+    if (set.size === 0 && first) {
+      connections.delete(k);
+      const participants = channelParticipants.get(first.channelId);
+      if (participants) {
+        participants.delete(first.participantId);
+        if (participants.size === 0) {
+          channelParticipants.delete(first.channelId);
+        }
+      }
+    }
+  }
+
+  if (swept > 0) {
+    log.info('swept dead unread connections', { swept });
+  }
+
+  return swept;
 }

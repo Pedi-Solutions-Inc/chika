@@ -214,11 +214,15 @@ channels.get('/:channelId/stream', async (c) => {
   reqLog.info('SSE stream opened', { channelId, lastEventId, sinceTime });
 
   return streamSSE(c, async (stream) => {
+    // Hono skips abort signal registration for Bun >= 1.2.
+    c.req.raw.signal.addEventListener('abort', () => {
+      if (!stream.closed) stream.abort();
+    });
+
     const conn = subscribe(channelId, stream);
 
     stream.onAbort(() => {
       reqLog.info('SSE stream closed', { channelId });
-      unsubscribe(channelId, conn);
     });
 
     try {
@@ -249,6 +253,7 @@ channels.get('/:channelId/stream', async (c) => {
       }
 
       while (true) {
+        if (stream.closed || stream.aborted) break;
         try {
           await stream.writeSSE({
             event: 'heartbeat',
@@ -279,30 +284,32 @@ channels.get('/:channelId/unread', async (c) => {
     return c.json({ error: 'Channel is closed' }, 410);
   }
 
-  const participantMap = new Map(channel?.participants.map(p => [p.id, p]));
-  const participantName = participantMap.get(participantId)?.name ?? participantId;
+  const participant = channel?.participants.find(p => p.id === participantId);
+  const participantName = participant?.name ?? participantId;
+  const shouldFetchUnread = participant != null;
 
   reqLog.info('unread stream opened', { channelId, participant: participantName });
 
   return streamSSE(c, async (stream) => {
+    // Hono skips abort signal registration for Bun >= 1.2.
+    c.req.raw.signal.addEventListener('abort', () => {
+      if (!stream.closed) stream.abort();
+    });
+
     const conn = subscribeUnread(channelId, participantId, stream);
 
     stream.onAbort(() => {
       reqLog.info('unread stream closed', { channelId, participant: participantName });
-      unsubscribeUnread(channelId, participantId, conn);
     });
 
     try {
       let unread_count = 0;
       let last_message_at: string | null = null;
 
-      if (channel) {
-        const participant = participantMap.get(participantId);
-        if (participant) {
-          const counts = await getUnreadCount(channelId, participantId);
-          unread_count = counts.unread_count;
-          last_message_at = counts.last_message_at;
-        }
+      if (shouldFetchUnread) {
+        const counts = await getUnreadCount(channelId, participantId);
+        unread_count = counts.unread_count;
+        last_message_at = counts.last_message_at;
       }
 
       await stream.writeSSE({
@@ -315,6 +322,7 @@ channels.get('/:channelId/unread', async (c) => {
       });
 
       while (true) {
+        if (stream.closed || stream.aborted) break;
         try {
           await stream.writeSSE({
             event: 'heartbeat',

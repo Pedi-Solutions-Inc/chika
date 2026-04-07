@@ -1,5 +1,8 @@
 import type { Message } from '@pedi/chika-types';
 import type { SSEStreamingApi } from 'hono/streaming';
+import { createComponentLogger } from './logger';
+
+const log = createComponentLogger('broadcaster');
 
 interface Connection {
   stream: SSEStreamingApi;
@@ -77,4 +80,34 @@ export function getAllChannelIds(): IterableIterator<string> {
 
 export function getConnectionCount(channelId: string): number {
   return channelConnections.get(channelId)?.size ?? 0;
+}
+
+export function getTotalConnectionCount(): number {
+  let total = 0;
+  for (const set of channelConnections.values()) {
+    total += set.size;
+  }
+  return total;
+}
+
+export function sweepDeadConnections(): number {
+  let swept = 0;
+
+  for (const [channelId, connections] of channelConnections) {
+    for (const conn of connections) {
+      if (conn.stream.closed || conn.stream.aborted) {
+        connections.delete(conn);
+        swept++;
+      }
+    }
+    if (connections.size === 0) {
+      channelConnections.delete(channelId);
+    }
+  }
+
+  if (swept > 0) {
+    log.info('swept dead connections', { swept });
+  }
+
+  return swept;
 }

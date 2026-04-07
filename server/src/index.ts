@@ -4,8 +4,8 @@ import { bodyLimit } from 'hono/body-limit';
 import { channels } from './routes/channels';
 import { internal } from './routes/internal';
 import { connectDb, disconnectDb, getDb } from './db';
-import { getAllChannelIds, disconnectChannel } from './broadcaster';
-import { disconnectUnreadChannel } from './unread-broadcaster';
+import { getAllChannelIds, disconnectChannel, sweepDeadConnections } from './broadcaster';
+import { disconnectUnreadChannel, sweepDeadUnreadConnections } from './unread-broadcaster';
 import { rateLimiter } from 'hono-rate-limiter';
 import { startChannelCleanup, stopChannelCleanup } from './channel-cleanup';
 import { initSentry, captureException } from './sentry';
@@ -15,6 +15,10 @@ import { env } from './env';
 import { log } from './logger';
 import { requestLogger, getRequestLogger } from './middleware/request-logger';
 import { getMessageCounts } from './message-counter';
+import { getTotalConnectionCount } from './broadcaster';
+import { getTotalUnreadConnectionCount } from './unread-broadcaster';
+
+const sessionStartedAt = new Date();
 
 const app = new Hono();
 
@@ -41,9 +45,21 @@ app.get('/health', async (c) => {
 app.get('/stats', async (c) => {
   const counts = await getMessageCounts();
   return c.json({
+    session_from: sessionStartedAt.toLocaleString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'shortOffset',
+    }),
     messages: {
       total: counts.total,
       session: counts.session,
+    },
+    connections: {
+      sse_streams: getTotalConnectionCount(),
+      unread_streams: getTotalUnreadConnectionCount(),
     },
   });
 });
@@ -84,10 +100,16 @@ await initAuth();
 await loadPlugins();
 startChannelCleanup();
 
+const sweepTimer = setInterval(() => {
+  sweepDeadConnections();
+  sweepDeadUnreadConnections();
+}, 60_000);
+
 log.info('server started', { port: env.PORT, env: env.NODE_ENV });
 
 async function shutdown() {
   log.info('shutting down');
+  clearInterval(sweepTimer);
   stopChannelCleanup();
   await destroyPlugins();
 

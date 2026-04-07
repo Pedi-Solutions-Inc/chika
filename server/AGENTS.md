@@ -11,8 +11,8 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 | `src/index.ts` | Entry point — mounts routes, connects DB, exports Bun server config with `idleTimeout: 0` |
 | `src/env.ts` | Parses and validates `Bun.env` using Zod |
 | `src/db.ts` | MongoDB client, collections, all query/mutation functions |
-| `src/broadcaster.ts` | In-memory `Map<channelId, Set<Connection>>` for SSE fan-out and dead-connection cleanup |
-| `src/unread-broadcaster.ts` | Per-channel-participant SSE broadcaster for unread notifications. Keyed by `channelId:participantId` with secondary `channelParticipants` index for efficient channel-wide broadcasts |
+| `src/broadcaster.ts` | In-memory `Map<channelId, Set<Connection>>` for SSE fan-out, dead-connection cleanup, and periodic sweep via `sweepDeadConnections()` |
+| `src/unread-broadcaster.ts` | Per-channel-participant SSE broadcaster for unread notifications. Keyed by `channelId:participantId` with secondary `channelParticipants` index and `sweepDeadUnreadConnections()` |
 | `src/routes/channels.ts` | Client-facing: join, send message, SSE stream, unread SSE stream, mark-read |
 | `src/routes/internal.ts` | Internal: system messages, history, close channel |
 | `src/middleware/api-key.ts` | Validates `X-Api-Key` header via `timingSafeEqual` |
@@ -24,9 +24,12 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 
 - All request validation uses Zod schemas from `@pedi/chika-types` via `@hono/zod-validator`
 - `broadcaster.ts` manages an in-memory `Map<string, Set<Connection>>` — no Redis/pub-sub at Phase 1 scale
-- SSE streams use Hono's `streamSSE` helper with `stream.onAbort` for cleanup
+- **SSE abort signal:** Hono's `streamSSE` skips abort signal registration for Bun >= 1.2 (`isOldBunVersion()` gate). Both SSE endpoints manually register `c.req.raw.signal.addEventListener('abort', ...)` to ensure cleanup on client disconnect. Additionally, heartbeat loops check `stream.closed || stream.aborted` each iteration.
+- **Connection sweeper:** A 60-second interval in `index.ts` calls `sweepDeadConnections()` and `sweepDeadUnreadConnections()` as defense-in-depth against zombie SSE connections that bypass abort detection.
+- **SSE closure hygiene:** Large objects (e.g. `channel` document) are nulled after the SSE setup phase to reduce per-connection memory retention.
 - Heartbeat events omit `id` to avoid resetting `Last-Event-ID` on the client
 - `idleTimeout: 0` in the export prevents Bun from closing idle SSE connections
+- **Sentry optimization:** `sentry.init()` filters out all OpenTelemetry auto-instrumentation integrations (38 packages for express, redis, kafka, etc.) that are irrelevant to this server. Only error capture is retained.
 - MongoDB indexes are created on startup in `connectDb()`
 - Channel close terminates all active SSE connections via `disconnectChannel()`
 - API key comparison uses `timingSafeEqual` with length pre-check
