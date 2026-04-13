@@ -8,6 +8,7 @@ import {
 import { buildRequestInfo, runInterceptors, runAfterSend } from '../plugins';
 import {
   findChannel,
+  findOrCreateChannel,
   insertMessage,
   getMessageHistory,
   closeChannel,
@@ -37,10 +38,7 @@ internal.post(
     const channelId = c.req.param('channelId');
     const reqLog = getRequestLogger(c);
 
-    const channel = await findChannel(channelId);
-    if (!channel) {
-      return c.json({ error: 'Channel not found' }, 404);
-    }
+    const channel = await findOrCreateChannel(channelId);
     if (channel.status === 'closed') {
       return c.json({ error: 'Channel is closed' }, 410);
     }
