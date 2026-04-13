@@ -31,12 +31,11 @@ Hono.js chat server running on Bun with MongoDB persistence and SSE real-time de
 - `idleTimeout: 0` in the export prevents Bun from closing idle SSE connections
 - **Sentry optimization:** `sentry.init()` filters out all OpenTelemetry auto-instrumentation integrations (38 packages for express, redis, kafka, etc.) that are irrelevant to this server. Only error capture is retained.
 - MongoDB indexes are created on startup in `connectDb()`
-- Channel close terminates all active SSE connections via `disconnectChannel()`
+- Channel close terminates all active SSE connections via `disconnectChannel()`. Closed channels are read-only: existing participants can re-`/join` (returns history with `status: 'closed'`, no participant mutation) and re-open `/stream` (replays missed messages via `Last-Event-ID` / `since_time`, then closes the stream — no broadcaster subscription, no heartbeat loop, since no new messages can arrive). `POST /messages` and internal system messages still reject with 410. Non-participants of closed channels are still rejected with 410 on join. `addParticipant` filters on `status: 'active'` to prevent TOCTOU writes if a channel closes mid-join; the route returns 410 when this guard trips.
 - API key comparison uses `timingSafeEqual` with length pre-check
 - `getMessagesSince` uses ULID-based `_id` ordering (not timestamps) for gap-free replay
 - `getChannelMessages` is capped at 200 messages (matches internal history max)
 - `addParticipant` upserts: updates profile data if participant exists, inserts if new
-- SSE stream endpoint rejects closed channels with 410
 - **Idempotency:** `POST /channels/:channelId/messages` accepts optional `idempotency_key` (string, 1-64 chars). Enforced by sparse unique index on `{ channel_id, idempotency_key }`. On duplicate (MongoDB E11000), returns the original message's `id` and `created_at` without re-broadcasting. Messages without a key have no dedup overhead (sparse index).
 - `insertMessage` runs `insertOne` first, then `updateOne` for `last_activity_at` as best-effort (logged at warn on failure, never masks a successful insert)
 - `last_read_message_id` tracked per participant in the channel document for unread counting

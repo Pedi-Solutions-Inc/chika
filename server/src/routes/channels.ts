@@ -59,14 +59,50 @@ channels.post(
       role: participant.role,
     });
 
-    const channel = await findOrCreateChannel(channelId);
+    const existing = await findChannel(channelId);
 
-    if (channel.status === 'closed') {
-      reqLog.warn('join rejected — channel closed', { channelId });
-      return c.json({ error: 'Channel is closed' }, 410);
+    if (existing?.status === 'closed') {
+      const existingParticipant = existing.participants.find(p => p.id === participant.id);
+      if (!existingParticipant) {
+        reqLog.warn('join rejected — channel closed', { channelId });
+        return c.json({ error: 'Channel is closed' }, 410);
+      }
+
+      const messageDocs = await getChannelMessages(channelId);
+      const msgs = messageDocs.map(toMessage);
+
+      if (messageDocs.length > 0) {
+        const lastMsgId = messageDocs[messageDocs.length - 1]!._id;
+        try {
+          await updateLastRead(channelId, participant.id, lastMsgId);
+        } catch (err) {
+          reqLog.warn('updateLastRead failed on read-only rejoin', { channelId, error: String(err) });
+        }
+      }
+
+      reqLog.info('participant rejoined closed channel (read-only)', {
+        channelId,
+        participant: participant.name || participant.id,
+        messages: msgs.length,
+      });
+
+      return c.json({
+        channel_id: channelId,
+        status: existing.status,
+        participants: existing.participants.map(toParticipant),
+        messages: msgs,
+        joined_at: existingParticipant.joined_at.toISOString(),
+      });
     }
 
+    if (!existing) {
+      await findOrCreateChannel(channelId);
+    }
     const updatedChannel = await addParticipant(channelId, participant);
+    if (!updatedChannel) {
+      reqLog.warn('join rejected — channel closed during join', { channelId });
+      return c.json({ error: 'Channel is closed' }, 410);
+    }
 
     const messageDocs = await getChannelMessages(channelId);
     const msgs = messageDocs.map(toMessage);
@@ -204,14 +240,13 @@ channels.get('/:channelId/stream', async (c) => {
   if (!channel) {
     return c.json({ error: 'Channel not found' }, 404);
   }
-  if (channel.status === 'closed') {
-    return c.json({ error: 'Channel is closed' }, 410);
-  }
 
   const lastEventId = c.req.header('Last-Event-ID');
   const sinceTime = c.req.query('since_time');
 
-  reqLog.info('SSE stream opened', { channelId, lastEventId, sinceTime });
+  reqLog.info('SSE stream opened', { channelId, lastEventId, sinceTime, status: channel.status });
+
+  const isClosed = channel.status === 'closed';
 
   return streamSSE(c, async (stream) => {
     // Hono skips abort signal registration for Bun >= 1.2.
@@ -219,7 +254,11 @@ channels.get('/:channelId/stream', async (c) => {
       if (!stream.closed) stream.abort();
     });
 
-    const conn = subscribe(channelId, stream);
+    // Closed channels are read-only and never receive new broadcasts, so we skip
+    // the broadcaster subscription and heartbeat loop and terminate the stream
+    // after replaying history. The SDK's onClosed handler will surface this as
+    // a clean "closed" state.
+    const conn = isClosed ? null : subscribe(channelId, stream);
 
     stream.onAbort(() => {
       reqLog.info('SSE stream closed', { channelId });
@@ -252,6 +291,8 @@ channels.get('/:channelId/stream', async (c) => {
         }
       }
 
+      if (isClosed) return;
+
       while (true) {
         if (stream.closed || stream.aborted) break;
         try {
@@ -265,7 +306,7 @@ channels.get('/:channelId/stream', async (c) => {
         }
       }
     } finally {
-      unsubscribe(channelId, conn);
+      if (conn) unsubscribe(channelId, conn);
     }
   });
 });

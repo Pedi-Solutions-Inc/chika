@@ -136,12 +136,14 @@ export async function findOrCreateChannel(channelId: string): Promise<ChannelDoc
 export async function addParticipant(
   channelId: string,
   participant: Participant,
-): Promise<ChannelDocument> {
+): Promise<ChannelDocument | null> {
   const now = new Date();
 
-  // Try to update existing participant first.
+  // Try to update existing participant first. status: 'active' guard prevents
+  // mutating a channel that closed in the gap between the route's status check
+  // and this call.
   const updated = await channels().findOneAndUpdate(
-    { _id: channelId, 'participants.id': participant.id },
+    { _id: channelId, status: 'active', 'participants.id': participant.id },
     {
       $set: {
         'participants.$.name': participant.name,
@@ -157,7 +159,7 @@ export async function addParticipant(
 
   // Participant not found — push new entry.
   const pushed = await channels().findOneAndUpdate(
-    { _id: channelId, 'participants.id': { $ne: participant.id } },
+    { _id: channelId, status: 'active', 'participants.id': { $ne: participant.id } },
     {
       $push: {
         participants: { ...participant, joined_at: now },
@@ -166,8 +168,13 @@ export async function addParticipant(
     { returnDocument: 'after' },
   );
 
-  // If pushed is null, concurrent join already added this participant — fetch latest.
-  return pushed ?? (await channels().findOne({ _id: channelId }))!;
+  if (pushed) return pushed;
+
+  // Either the channel closed mid-flight, or a concurrent join already added
+  // this participant. Re-read to disambiguate.
+  const latest = await channels().findOne({ _id: channelId });
+  if (!latest || latest.status === 'closed') return null;
+  return latest;
 }
 
 const DEFAULT_JOIN_MESSAGE_LIMIT = 20;
