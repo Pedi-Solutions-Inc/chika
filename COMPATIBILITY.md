@@ -4,6 +4,7 @@ This file is automatically updated by the release workflows.
 
 | Server | SDK / Types | Date |
 |--------|-------------|------|
+| 1.0.9 | 1.0.10 | 2026-04-13 |
 | 1.0.8 | 1.0.10 | 2026-04-13 |
 | 1.0.7 | 1.0.10 | 2026-04-07 |
 | 1.0.6 | 1.0.10 | 2026-03-29 |
