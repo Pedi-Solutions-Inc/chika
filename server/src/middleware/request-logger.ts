@@ -35,6 +35,12 @@ export const requestLogger = createMiddleware(async (c, next) => {
   c.set(LOGGER_KEY, reqLog);
   c.set(REQUEST_ID_KEY, requestId);
 
+  // Skip logging for health checks to reduce noise
+  if (path === '/health') {
+    await next();
+    return;
+  }
+
   reqLog.info('request started', { ip });
 
   c.header('X-Request-ID', requestId);
