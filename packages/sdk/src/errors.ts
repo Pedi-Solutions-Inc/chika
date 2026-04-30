@@ -42,3 +42,10 @@ export class QueueFullError extends Error {
     this.name = 'QueueFullError';
   }
 }
+
+export class SendTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`Send timed out after ${timeoutMs}ms`);
+    this.name = 'SendTimeoutError';
+  }
+}

@@ -9,8 +9,8 @@ import type {
   SendMessageResponse,
 } from '@pedi/chika-types';
 import type { UseChatOptions, UseChatReturn, ChatStatus, ChatMessage } from './types';
-import { ChatDisconnectedError, ChannelClosedError, QueueFullError, RetryExhaustedError } from './errors';
-import { isRetryableError, resolveRetryConfig } from './retry';
+import { ChatDisconnectedError, ChannelClosedError, QueueFullError } from './errors';
+import { resolveRetryConfig } from './retry';
 import { createChatSession, type ChatSession, type SessionCallbacks } from './session';
 import { createNetworkMonitor, type NetworkMonitor } from './network-monitor';
 import { MessageQueue, type QueuedMessage } from './message-queue';
@@ -439,7 +439,13 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
         }
       };
 
-      // Queue path: enqueue and let queue handle retry + offline
+      // Queue path: enqueue and let queue handle retry + offline.
+      // QueueFullError is the only error thrown synchronously by enqueue() *before*
+      // an entry exists. Everything else (RetryExhaustedError, HttpError, AbortError,
+      // SendTimeoutError, etc.) is surfaced by the queue's flush(), which has
+      // already set the entry's status to 'failed' and kept it in this.entries —
+      // we MUST keep the optimistic visible so consumers' pendingByOptimisticId
+      // mapping can render the failure. handleError() would orphan the entry.
       if (queueRef.current) {
         try {
           const response = await queueRef.current.enqueue(doSend, messageKey);
@@ -448,22 +454,7 @@ export function useChat<D extends ChatDomain = DefaultDomain>(
         } catch (err) {
           if (err instanceof QueueFullError) {
             handleError(err);
-            throw err;
           }
-          if (err instanceof RetryExhaustedError || !isRetryableError(err)) {
-            // For failed messages: if optimistic, mark as failed (keep in UI)
-            // The pendingMessages state shows the status
-            if (optimistic && err instanceof RetryExhaustedError) {
-              // Keep optimistic message visible — queue tracks status as 'failed'.
-              // Keep messageKey in pendingOptimisticIds so SSE reconciliation can
-              // still match if the server eventually received the message.
-              // Removed on explicit cancelMessage() call.
-            } else {
-              handleError(err);
-            }
-            throw err;
-          }
-          handleError(err);
           throw err;
         }
       }

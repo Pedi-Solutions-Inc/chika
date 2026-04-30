@@ -4,6 +4,7 @@ import {
   ChannelClosedError,
   ChatDisconnectedError,
   QueueFullError,
+  SendTimeoutError,
 } from './errors';
 
 export interface RetryConfig {
@@ -31,6 +32,8 @@ export function isRetryableError(error: unknown): boolean {
   if (error instanceof ChatDisconnectedError) return false;
   if (error instanceof QueueFullError) return false;
   if (error instanceof DOMException && error.name === 'AbortError') return false;
+
+  if (error instanceof SendTimeoutError) return true;
 
   if (error instanceof HttpError) {
     const { status } = error;

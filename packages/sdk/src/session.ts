@@ -9,13 +9,14 @@ import type {
   MessageAttributes,
 } from '@pedi/chika-types';
 import type { ChatConfig, ChatStatus } from './types';
-import { ChatDisconnectedError, ChannelClosedError, HttpError } from './errors';
+import { ChatDisconnectedError, ChannelClosedError, HttpError, SendTimeoutError } from './errors';
 import { resolveServerUrl } from './resolve-url';
 import { createSSEConnection, type SSEConnection } from './sse-connection';
 import { withRetry, resolveRetryConfig, type RetryConfig } from './retry';
 import type { NetworkMonitor } from './network-monitor';
 
 const DEFAULT_RECONNECT_DELAY_MS = 3000;
+const DEFAULT_SEND_TIMEOUT_MS = 15000;
 const MAX_SEEN_IDS = 500;
 
 const MARK_READ_RETRY_CONFIG: RetryConfig = {
@@ -70,6 +71,7 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
   const serviceUrl = resolveServerUrl(config.manifest, channelId);
   const customHeaders = config.headers ?? {};
   const reconnectDelay = config.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+  const sendTimeoutMs = config.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
   const retryConfig = resolveRetryConfig(config.resilience);
 
   const sessionAbort = new AbortController();
@@ -215,21 +217,57 @@ export async function createChatSession<D extends ChatDomain = DefaultDomain>(
       };
 
       const sendFn = async (): Promise<SendMessageResponse> => {
-        const res = await fetch(
-          `${serviceUrl}/channels/${channelId}/messages`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...customHeaders },
-            body: JSON.stringify(payload),
-            signal: sessionAbort.signal,
-          },
-        );
+        const reqAbort = new AbortController();
+        const onSessionAbort = () =>
+          reqAbort.abort(sessionAbort.signal.reason ?? new DOMException('Aborted', 'AbortError'));
 
-        if (!res.ok) {
-          await throwHttpError(res);
+        if (sessionAbort.signal.aborted) {
+          onSessionAbort();
+        } else {
+          sessionAbort.signal.addEventListener('abort', onSessionAbort, { once: true });
         }
 
-        return res.json();
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          reqAbort.abort();
+        }, sendTimeoutMs);
+
+        try {
+          const res = await fetch(
+            `${serviceUrl}/channels/${channelId}/messages`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...customHeaders },
+              body: JSON.stringify(payload),
+              signal: reqAbort.signal,
+            },
+          );
+
+          if (!res.ok) {
+            await throwHttpError(res);
+          }
+
+          return res.json();
+        } catch (err) {
+          // Only attribute SendTimeoutError when an AbortError actually caused the
+          // rejection AND the session itself wasn't torn down. Otherwise an
+          // HttpError raised during the response-body drain (which yields control
+          // via `await res.text()` inside throwHttpError) after our timer fired
+          // could be misclassified.
+          if (
+            timedOut
+            && !sessionAbort.signal.aborted
+            && err instanceof DOMException
+            && err.name === 'AbortError'
+          ) {
+            throw new SendTimeoutError(sendTimeoutMs);
+          }
+          throw err;
+        } finally {
+          clearTimeout(timer);
+          sessionAbort.signal.removeEventListener('abort', onSessionAbort);
+        }
       };
 
       const response = retryConfig

@@ -266,6 +266,10 @@ export class MessageQueue {
       entry.reject(new DOMException('Queue disposed', 'AbortError'));
     }
     this.entries = [];
+    // Notify consumers so their pendingMessages snapshot clears. Without this,
+    // a channelId switch with in-flight sends leaves stale 'failed' entries
+    // referencing message keys that have been removed from `messages`.
+    this.config.onStatusChange?.();
   }
 
   /**

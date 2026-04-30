@@ -3,7 +3,7 @@ export { useUnread } from './use-unread';
 export { createChatSession } from './session';
 export { resolveServerUrl, createManifest } from './resolve-url';
 export { createSSEConnection } from './sse-connection';
-export { ChatDisconnectedError, ChannelClosedError, HttpError, RetryExhaustedError, QueueFullError } from './errors';
+export { ChatDisconnectedError, ChannelClosedError, HttpError, RetryExhaustedError, QueueFullError, SendTimeoutError } from './errors';
 export { withRetry, isRetryableError, calculateBackoff, resolveRetryConfig } from './retry';
 export { createNetworkMonitor } from './network-monitor';
 export { createQueueStorage, createAsyncStorageAdapter } from './message-queue';

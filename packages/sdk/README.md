@@ -27,7 +27,8 @@ Provides a drop-in React hook (`useChat`) that connects your React Native app to
 - Platform-aware AppState handling (iOS vs Android)
 - Optimistic message sending with deduplication
 - Hash-based bucket routing for multi-server deployments
-- Custom error classes (`ChatDisconnectedError`, `ChannelClosedError`, `HttpError`, `RetryExhaustedError`, `QueueFullError`)
+- Custom error classes (`ChatDisconnectedError`, `ChannelClosedError`, `HttpError`, `RetryExhaustedError`, `QueueFullError`, `SendTimeoutError`)
+- Per-request send timeout via `sendTimeoutMs` (default 15 s) so weak-signal sends never hang indefinitely
 - Network resilience with automatic retry (exponential backoff, jitter, 429 Retry-After support)
 - Offline message queue with per-message status tracking (`sending`, `queued`, `failed`)
 - Optional `@react-native-community/netinfo` integration for network-aware reconnection
@@ -120,6 +121,26 @@ function ChatScreen({ bookingId, user }) {
 ```
 
 Resilience is enabled by default. Disable with `resilience: false` for manual control.
+
+### Send Failure Contract
+
+When resilience is enabled (the default), a failed `sendMessage` call leaves the optimistic message visible in `messages` and surfaces the failure via `pendingMessages[i].status === 'failed'`. Render that state in your UI and wire `retryMessage(optimisticId)` / `cancelMessage(optimisticId)` to user actions. Applies to `RetryExhaustedError`, `HttpError` (non-retryable), `SendTimeoutError`, `AbortError`, and any future post-enqueue error class.
+
+The exceptions are:
+
+- **`ChatDisconnectedError` (synchronous, no session yet)** — thrown directly from `sendMessage` before any optimistic insertion. The SDK has nothing to attach to. Callers must keep a tiny shadow queue in their own state and drain it once `status === 'connected'`.
+- **`QueueFullError`** — thrown synchronously from `enqueue()` when at `maxQueueSize`. The optimistic insertion is rolled back; show a "queue full" message and let the user retry later.
+- **`resilience: false` mode** — there is no `pendingMessages` tracking, so the SDK falls back to removing the optimistic on error. Callers in this mode are responsible for their own failure UX.
+
+### Consumer Obligations
+
+When wiring `useChat` into a UI, the consumer is responsible for:
+
+- Rendering `pendingMessages` to show retrying / failed bubbles. The SDK provides the state; the consumer renders it.
+- Wiring retry/cancel UI to `retryMessage(optimisticId)` / `cancelMessage(optimisticId)`.
+- Handling synchronous `ChatDisconnectedError` from `sendMessage` — typically with a shadow queue that drains on the next `'connected'` status.
+- Avoiding `optimisticSend: false` if the rendering pipeline relies on a `pendingByOptimisticId` join keyed by `messages[i].id`.
+- Treating the SDK-issued `messageKey` as both the optimistic id and the server idempotency key — never synthesize your own.
 
 **Peer dependencies:** `react >= 18`, `react-native >= 0.72`
 
